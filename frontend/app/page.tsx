@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Check, CircleAlert, ExternalLink, Newspaper, Plus } from "lucide-react";
+import { Check, CircleAlert, ExternalLink, Newspaper, Plus, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,6 +13,8 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { runCurateJob } from "@/lib/backend";
+import { getFeedUrl, setFeedUrl } from "@/lib/feed-urls";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase/client";
 import {
   importanceLabel,
@@ -56,6 +58,9 @@ export default function HomePage() {
   const [savingTopic, setSavingTopic] = useState(false);
   const [readingId, setReadingId] = useState<string | null>(null);
   const [showRead, setShowRead] = useState(false);
+  const [feedUrl, setFeedUrlInput] = useState("");
+  const [curating, setCurating] = useState(false);
+  const [articlesRefreshKey, setArticlesRefreshKey] = useState(0);
   const [message, setMessage] = useState<string | null>(
     isSupabaseConfigured
       ? null
@@ -94,8 +99,10 @@ export default function HomePage() {
       }
 
       const nextTopics = data ?? [];
+      const firstTopicId = nextTopics[0]?.id ?? null;
       setTopics(nextTopics);
-      setSelectedTopicId((current) => current ?? nextTopics[0]?.id ?? null);
+      setSelectedTopicId(firstTopicId);
+      setFeedUrlInput(firstTopicId ? getFeedUrl(firstTopicId) : "");
       if (nextTopics.length > 0) {
         setArticlesLoading(true);
       }
@@ -148,7 +155,7 @@ export default function HomePage() {
     return () => {
       ignore = true;
     };
-  }, [selectedTopicId]);
+  }, [selectedTopicId, articlesRefreshKey]);
 
   async function handleAddTopic(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -184,6 +191,7 @@ export default function HomePage() {
     form.reset();
     setTopics((current) => [...current, data]);
     setSelectedTopicId(data.id);
+    setFeedUrlInput("");
   }
 
   async function handleMarkAsRead(articleId: string) {
@@ -211,6 +219,40 @@ export default function HomePage() {
         article.id === articleId ? { ...article, is_read: true } : article,
       ),
     );
+  }
+
+  async function handleCurateNow() {
+    if (!selectedTopicId) {
+      setMessage("先にトピックを選んでください。");
+      return;
+    }
+
+    const trimmed = feedUrl.trim();
+    if (!trimmed) {
+      setMessage("RSS の URL を入力してください。例: https://www.nasa.gov/rss/dyn/breaking_news.rss");
+      return;
+    }
+
+    setFeedUrl(selectedTopicId, trimmed);
+    setCurating(true);
+    setMessage(null);
+
+    try {
+      const result = await runCurateJob({
+        topicId: selectedTopicId,
+        feedUrl: trimmed,
+      });
+      setMessage(result.message);
+      setArticlesRefreshKey((current) => current + 1);
+    } catch (error) {
+      const text =
+        error instanceof Error
+          ? error.message
+          : "取得に失敗しました。バックエンド（uvicorn）が起動しているか確認してください。";
+      setMessage(text);
+    } finally {
+      setCurating(false);
+    }
   }
 
   return (
@@ -270,6 +312,7 @@ export default function HomePage() {
                       setArticles([]);
                       setArticlesLoading(true);
                       setSelectedTopicId(topic.id);
+                      setFeedUrlInput(getFeedUrl(topic.id));
                     }}
                     className={cn(
                       "rounded-lg px-3 py-2 text-left text-sm transition-colors",
@@ -307,25 +350,61 @@ export default function HomePage() {
         </aside>
 
         <section className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3 md:px-6">
-            <div>
-              <h2 className="text-base font-medium">
-                {selectedTopic ? selectedTopic.name : "記事"}
-              </h2>
-              <p className="text-xs text-muted-foreground">
-                {selectedTopic
-                  ? `未読 ${unreadCount} 件`
-                  : "左のトピックを選ぶと、記事がここに並びます"}
-              </p>
+          <div className="flex flex-col gap-3 border-b px-4 py-3 md:px-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-base font-medium">
+                  {selectedTopic ? selectedTopic.name : "記事"}
+                </h2>
+                <p className="text-xs text-muted-foreground">
+                  {selectedTopic
+                    ? `未読 ${unreadCount} 件`
+                    : "左のトピックを選ぶと、記事がここに並びます"}
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant={showRead ? "secondary" : "outline"}
+                onClick={() => setShowRead((current) => !current)}
+                aria-pressed={showRead}
+              >
+                {showRead ? "既読を隠す" : "既読を表示"}
+              </Button>
             </div>
-            <Button
-              type="button"
-              variant={showRead ? "secondary" : "outline"}
-              onClick={() => setShowRead((current) => !current)}
-              aria-pressed={showRead}
-            >
-              {showRead ? "既読を隠す" : "既読を表示"}
-            </Button>
+
+            {selectedTopic ? (
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                <div className="min-w-0 flex-1">
+                  <label
+                    htmlFor="feed-url"
+                    className="text-xs font-medium text-muted-foreground"
+                  >
+                    このトピックの RSS URL
+                  </label>
+                  <Input
+                    id="feed-url"
+                    className="mt-1.5"
+                    value={feedUrl}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setFeedUrlInput(value);
+                      setFeedUrl(selectedTopic.id, value);
+                    }}
+                    placeholder="例: https://www.nasa.gov/rss/dyn/breaking_news.rss"
+                    disabled={curating}
+                    autoComplete="off"
+                  />
+                </div>
+                <Button
+                  type="button"
+                  onClick={() => void handleCurateNow()}
+                  disabled={curating || !selectedTopic}
+                >
+                  <RefreshCw className={cn(curating && "animate-spin")} />
+                  {curating ? "取得中..." : "今すぐ取得"}
+                </Button>
+              </div>
+            ) : null}
           </div>
 
           <ScrollArea className="min-h-0 flex-1">
