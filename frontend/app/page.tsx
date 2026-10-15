@@ -21,6 +21,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { runCurateJob } from "@/lib/backend";
+import { withLog } from "@/lib/logging";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase/client";
 import {
   importanceLabel,
@@ -87,34 +88,38 @@ export default function HomePage() {
     let ignore = false;
 
     async function loadTopics() {
-      const { data, error } = await supabase!
-        .from("topics")
-        .select("id, name, created_at")
-        .order("created_at", { ascending: true });
+      await withLog("loadTopics", {}, async () => {
+        const { data, error } = await supabase!
+          .from("topics")
+          .select("id, name, created_at")
+          .order("created_at", { ascending: true });
 
-      if (ignore) {
-        return;
-      }
+        if (ignore) {
+          return;
+        }
 
-      if (error) {
-        setMessage(
-          "トピックを読み込めませんでした。テーブル名と、Supabase の読み取り許可（RLS）を確認してください。",
-        );
+        if (error) {
+          setMessage(
+            "トピックを読み込めませんでした。テーブル名と、Supabase の読み取り許可（RLS）を確認してください。",
+          );
+          setTopicsLoading(false);
+          throw new Error(error.message);
+        }
+
+        const nextTopics = data ?? [];
+        const firstTopicId = nextTopics[0]?.id ?? null;
+        setTopics(nextTopics);
+        setSelectedTopicId(firstTopicId);
+        if (nextTopics.length > 0) {
+          setArticlesLoading(true);
+        }
         setTopicsLoading(false);
-        return;
-      }
-
-      const nextTopics = data ?? [];
-      const firstTopicId = nextTopics[0]?.id ?? null;
-      setTopics(nextTopics);
-      setSelectedTopicId(firstTopicId);
-      if (nextTopics.length > 0) {
-        setArticlesLoading(true);
-      }
-      setTopicsLoading(false);
+      });
     }
 
-    void loadTopics();
+    void loadTopics().catch(() => {
+      setTopicsLoading(false);
+    });
 
     return () => {
       ignore = true;
@@ -131,33 +136,38 @@ export default function HomePage() {
     let ignore = false;
 
     async function loadArticles() {
-      setArticlesLoading(true);
+      await withLog("loadArticles", { topicId }, async () => {
+        setArticlesLoading(true);
 
-      const { data, error } = await client
-        .from("articles")
-        .select(
-          "id, topic_id, title, url, summary, importance, is_read, published_at",
-        )
-        .eq("topic_id", topicId)
-        .order("published_at", { ascending: false, nullsFirst: false });
+        const { data, error } = await client
+          .from("articles")
+          .select(
+            "id, topic_id, title, url, summary, importance, is_read, published_at",
+          )
+          .eq("topic_id", topicId)
+          .order("published_at", { ascending: false, nullsFirst: false });
 
-      if (ignore) {
-        return;
-      }
+        if (ignore) {
+          return;
+        }
 
-      if (error) {
-        setMessage(
-          "記事を読み込めませんでした。articles テーブルを確認してください。",
-        );
-        setArticles([]);
-      } else {
+        if (error) {
+          setMessage(
+            "記事を読み込めませんでした。articles テーブルを確認してください。",
+          );
+          setArticles([]);
+          setArticlesLoading(false);
+          throw new Error(error.message);
+        }
+
         setArticles(data ?? []);
-      }
-
-      setArticlesLoading(false);
+        setArticlesLoading(false);
+      });
     }
 
-    void loadArticles();
+    void loadArticles().catch(() => {
+      setArticlesLoading(false);
+    });
 
     return () => {
       ignore = true;
@@ -169,39 +179,43 @@ export default function HomePage() {
     const form = event.currentTarget;
     const name = String(new FormData(form).get("name") ?? "").trim();
 
-    if (!name) {
-      setMessage("トピック名を入力してください。");
-      return;
-    }
+    await withLog("handleAddTopic", { name }, async () => {
+      if (!name) {
+        setMessage("トピック名を入力してください。");
+        return;
+      }
 
-    if (!supabase) {
-      setMessage(
-        ".env.local に Supabase の URL と anon key を設定してください。",
-      );
-      return;
-    }
+      if (!supabase) {
+        setMessage(
+          ".env.local に Supabase の URL と anon key を設定してください。",
+        );
+        return;
+      }
 
-    setSavingTopic(true);
-    setMessage(null);
+      setSavingTopic(true);
+      setMessage(null);
 
-    const { data, error } = await supabase
-      .from("topics")
-      .insert({ name })
-      .select("id, name, created_at")
-      .single();
+      const { data, error } = await supabase
+        .from("topics")
+        .insert({ name })
+        .select("id, name, created_at")
+        .single();
 
-    setSavingTopic(false);
+      setSavingTopic(false);
 
-    if (error || !data) {
-      setMessage(
-        "トピックを追加できませんでした。書き込み許可（RLS）を確認してください。",
-      );
-      return;
-    }
+      if (error || !data) {
+        setMessage(
+          "トピックを追加できませんでした。書き込み許可（RLS）を確認してください。",
+        );
+        throw new Error(error?.message ?? "トピック追加に失敗しました");
+      }
 
-    form.reset();
-    setTopics((current) => [...current, data]);
-    setSelectedTopicId(data.id);
+      form.reset();
+      setTopics((current) => [...current, data]);
+      setSelectedTopicId(data.id);
+    }).catch(() => {
+      setSavingTopic(false);
+    });
   }
 
   async function handleMarkAsRead(articleId: string) {
@@ -209,28 +223,32 @@ export default function HomePage() {
       return;
     }
 
-    setReadingId(articleId);
-    setMessage(null);
+    await withLog("handleMarkAsRead", { articleId }, async () => {
+      setReadingId(articleId);
+      setMessage(null);
 
-    const { error } = await supabase
-      .from("articles")
-      .update({ is_read: true })
-      .eq("id", articleId);
+      const { error } = await supabase
+        .from("articles")
+        .update({ is_read: true })
+        .eq("id", articleId);
 
-    setReadingId(null);
+      setReadingId(null);
 
-    if (error) {
-      setMessage(
-        "既読に更新できませんでした。書き込み許可（RLS）を確認してください。",
+      if (error) {
+        setMessage(
+          "既読に更新できませんでした。書き込み許可（RLS）を確認してください。",
+        );
+        throw new Error(error.message);
+      }
+
+      setArticles((current) =>
+        current.map((article) =>
+          article.id === articleId ? { ...article, is_read: true } : article,
+        ),
       );
-      return;
-    }
-
-    setArticles((current) =>
-      current.map((article) =>
-        article.id === articleId ? { ...article, is_read: true } : article,
-      ),
-    );
+    }).catch(() => {
+      setReadingId(null);
+    });
   }
 
   async function handleCurateNow() {
@@ -239,25 +257,34 @@ export default function HomePage() {
       return;
     }
 
-    setCurating(true);
-    setMessage(null);
+    await withLog(
+      "handleCurateNow",
+      { topicId: selectedTopic.id, topicName: selectedTopic.name },
+      async () => {
+        setCurating(true);
+        setMessage(null);
 
-    try {
-      const result = await runCurateJob({
-        topicId: selectedTopic.id,
-        topicName: selectedTopic.name,
-      });
-      setMessage(result.message);
-      setArticlesRefreshKey((current) => current + 1);
-    } catch (error) {
-      const text =
-        error instanceof Error
-          ? error.message
-          : "取得に失敗しました。バックエンド（uvicorn）が起動しているか確認してください。";
-      setMessage(text);
-    } finally {
+        try {
+          const result = await runCurateJob({
+            topicId: selectedTopic.id,
+            topicName: selectedTopic.name,
+          });
+          setMessage(result.message);
+          setArticlesRefreshKey((current) => current + 1);
+        } catch (error) {
+          const text =
+            error instanceof Error
+              ? error.message
+              : "取得に失敗しました。バックエンド（uvicorn）が起動しているか確認してください。";
+          setMessage(text);
+          throw error instanceof Error ? error : new Error(text);
+        } finally {
+          setCurating(false);
+        }
+      },
+    ).catch(() => {
       setCurating(false);
-    }
+    });
   }
 
   return (

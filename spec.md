@@ -57,6 +57,8 @@ RSS_App/
 | `frontend/app/page.tsx` | 画面本体（1 ページ） |
 | `frontend/lib/supabase/` | Supabase クライアントと型 |
 | `frontend/lib/backend.ts` | `POST /jobs/curate` の呼び出し |
+| `frontend/lib/logging.ts` | フロントの開始／終了／例外ログ（`withLog`） |
+| `frontend/app/api/logs/route.ts` | フロントログを `Logs/frontend_*.log` に書く受け口 |
 | `backend/app/main.py` | FastAPI 入口・`GET /health` |
 | `backend/app/routers/jobs.py` | `POST /jobs/curate` |
 | `backend/app/services/curate.py` | パイプラインの司令塔 |
@@ -281,24 +283,12 @@ uvicorn app.main:app --reload --port 8000
 
 ---
 
-## 9. ログ仕様（backend）
+## 9. ログ仕様
 
-対象は **backend のみ**（frontend には出さない）。
+backend / frontend とも、対象メソッドで **開始／終了／例外** を出し、アプリルートの `Logs/` に日付付きファイルへ書く。  
+コンソールには出さない（ファイルのみ）。
 
-### 9.1 出力先
-
-| 項目 | 内容 |
-|------|------|
-| フォルダ | アプリルート直下の `Logs/`（無ければ起動時に作成） |
-| ファイル名 | `backend_YYYY-MM-DD.log`（例: `backend_2026-10-15.log`） |
-| パス例 | `RSS_App/Logs/backend_2026-10-15.log` |
-| コンソール | **出さない**（ファイルのみ） |
-
-日付は起動・設定時点の当日。日付が変わると新しいファイル名になる。
-
-### 9.2 出す内容
-
-対象メソッドごとに、次の3種を出す。
+### 9.1 共通ルール
 
 | タイミング | レベル | メッセージの形 |
 |------------|--------|----------------|
@@ -306,9 +296,19 @@ uvicorn app.main:app --reload --port 8000
 | 正常終了 | INFO | `終了: 関数名` |
 | 例外 | ERROR | `例外: 関数名` ＋ 例外の内容（スタックトレース付き）。例外はそのまま再送出 |
 
-共通実装は [`backend/app/logging_utils.py`](backend/app/logging_utils.py) の `@log_call` と `setup_logging()`。
+- フォルダ: アプリルート直下の `Logs/`（無ければ作成）
+- 日付は当日。日付が変わると新しいファイル名になる
+- API キー／秘密鍵はログに出さない
 
-### 9.3 対象メソッド
+### 9.2 backend
+
+| 項目 | 内容 |
+|------|------|
+| ファイル名 | `backend_YYYY-MM-DD.log` |
+| パス例 | `RSS_App/Logs/backend_2026-10-15.log` |
+| 実装 | [`backend/app/logging_utils.py`](backend/app/logging_utils.py) の `@log_call` と `setup_logging()` |
+
+対象メソッド:
 
 | 場所 | 関数 |
 |------|------|
@@ -321,9 +321,23 @@ uvicorn app.main:app --reload --port 8000
 
 小さな内部ヘルパー（例: `_clean_text`）は対象外。
 
-### 9.4 秘密情報
+### 9.3 frontend
 
-`GEMINI_API_KEY` や `SUPABASE_SERVICE_ROLE_KEY` など、API キー／秘密鍵はログに出さない。
+ブラウザから直接ディスクには書けないため、Next.js の受け口経由でファイルに書く。
+
+| 項目 | 内容 |
+|------|------|
+| ファイル名 | `frontend_YYYY-MM-DD.log` |
+| パス例 | `RSS_App/Logs/frontend_2026-10-15.log` |
+| 受け口 | `POST /api/logs`（[`frontend/app/api/logs/route.ts`](frontend/app/api/logs/route.ts)） |
+| クライアント | [`frontend/lib/logging.ts`](frontend/lib/logging.ts) の `withLog` |
+
+対象メソッド:
+
+| 場所 | 関数 |
+|------|------|
+| `lib/backend.ts` | `runCurateJob` |
+| `app/page.tsx` | `loadTopics`, `loadArticles`, `handleAddTopic`, `handleMarkAsRead`, `handleCurateNow` |
 
 ---
 
