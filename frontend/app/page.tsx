@@ -1,7 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Check, CircleAlert, ExternalLink, Newspaper, Plus, RefreshCw } from "lucide-react";
+import {
+  Check,
+  CircleAlert,
+  ExternalLink,
+  Newspaper,
+  Plus,
+  RefreshCw,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,7 +21,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { runCurateJob } from "@/lib/backend";
-import { getFeedUrl, setFeedUrl } from "@/lib/feed-urls";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase/client";
 import {
   importanceLabel,
@@ -58,7 +64,6 @@ export default function HomePage() {
   const [savingTopic, setSavingTopic] = useState(false);
   const [readingId, setReadingId] = useState<string | null>(null);
   const [showRead, setShowRead] = useState(false);
-  const [feedUrl, setFeedUrlInput] = useState("");
   const [curating, setCurating] = useState(false);
   const [articlesRefreshKey, setArticlesRefreshKey] = useState(0);
   const [message, setMessage] = useState<string | null>(
@@ -67,7 +72,8 @@ export default function HomePage() {
       : "Supabase の接続情報が未設定です。.env.example をコピーして .env.local を作り、URL と anon key を入れてから開発サーバーを再起動してください。",
   );
 
-  const selectedTopic = topics.find((topic) => topic.id === selectedTopicId) ?? null;
+  const selectedTopic =
+    topics.find((topic) => topic.id === selectedTopicId) ?? null;
   const visibleArticles = showRead
     ? articles
     : articles.filter((article) => !article.is_read);
@@ -102,7 +108,6 @@ export default function HomePage() {
       const firstTopicId = nextTopics[0]?.id ?? null;
       setTopics(nextTopics);
       setSelectedTopicId(firstTopicId);
-      setFeedUrlInput(firstTopicId ? getFeedUrl(firstTopicId) : "");
       if (nextTopics.length > 0) {
         setArticlesLoading(true);
       }
@@ -141,7 +146,9 @@ export default function HomePage() {
       }
 
       if (error) {
-        setMessage("記事を読み込めませんでした。articles テーブルを確認してください。");
+        setMessage(
+          "記事を読み込めませんでした。articles テーブルを確認してください。",
+        );
         setArticles([]);
       } else {
         setArticles(data ?? []);
@@ -168,7 +175,9 @@ export default function HomePage() {
     }
 
     if (!supabase) {
-      setMessage(".env.local に Supabase の URL と anon key を設定してください。");
+      setMessage(
+        ".env.local に Supabase の URL と anon key を設定してください。",
+      );
       return;
     }
 
@@ -184,14 +193,15 @@ export default function HomePage() {
     setSavingTopic(false);
 
     if (error || !data) {
-      setMessage("トピックを追加できませんでした。書き込み許可（RLS）を確認してください。");
+      setMessage(
+        "トピックを追加できませんでした。書き込み許可（RLS）を確認してください。",
+      );
       return;
     }
 
     form.reset();
     setTopics((current) => [...current, data]);
     setSelectedTopicId(data.id);
-    setFeedUrlInput("");
   }
 
   async function handleMarkAsRead(articleId: string) {
@@ -210,7 +220,9 @@ export default function HomePage() {
     setReadingId(null);
 
     if (error) {
-      setMessage("既読に更新できませんでした。書き込み許可（RLS）を確認してください。");
+      setMessage(
+        "既読に更新できませんでした。書き込み許可（RLS）を確認してください。",
+      );
       return;
     }
 
@@ -222,25 +234,18 @@ export default function HomePage() {
   }
 
   async function handleCurateNow() {
-    if (!selectedTopicId) {
+    if (!selectedTopic) {
       setMessage("先にトピックを選んでください。");
       return;
     }
 
-    const trimmed = feedUrl.trim();
-    if (!trimmed) {
-      setMessage("RSS の URL を入力してください。例: https://www.nasa.gov/rss/dyn/breaking_news.rss");
-      return;
-    }
-
-    setFeedUrl(selectedTopicId, trimmed);
     setCurating(true);
     setMessage(null);
 
     try {
       const result = await runCurateJob({
-        topicId: selectedTopicId,
-        feedUrl: trimmed,
+        topicId: selectedTopic.id,
+        topicName: selectedTopic.name,
       });
       setMessage(result.message);
       setArticlesRefreshKey((current) => current + 1);
@@ -282,13 +287,17 @@ export default function HomePage() {
         <aside className="flex max-h-[46vh] w-full shrink-0 flex-col border-b bg-sidebar md:max-h-none md:w-80 md:border-r md:border-b-0">
           <div className="flex items-center justify-between px-4 py-3">
             <h2 className="text-sm font-medium">トピック</h2>
-            <span className="text-xs text-muted-foreground">{topics.length} 件</span>
+            <span className="text-xs text-muted-foreground">
+              {topics.length} 件
+            </span>
           </div>
 
           <ScrollArea className="min-h-0 flex-1">
             <div className="flex flex-col gap-1 px-3 pb-3">
               {topicsLoading ? (
-                <p className="px-2 py-6 text-sm text-muted-foreground">読み込み中...</p>
+                <p className="px-2 py-6 text-sm text-muted-foreground">
+                  読み込み中...
+                </p>
               ) : null}
 
               {!topicsLoading && topics.length === 0 ? (
@@ -312,7 +321,6 @@ export default function HomePage() {
                       setArticles([]);
                       setArticlesLoading(true);
                       setSelectedTopicId(topic.id);
-                      setFeedUrlInput(getFeedUrl(topic.id));
                     }}
                     className={cn(
                       "rounded-lg px-3 py-2 text-left text-sm transition-colors",
@@ -330,7 +338,10 @@ export default function HomePage() {
           </ScrollArea>
 
           <form onSubmit={handleAddTopic} className="border-t p-4">
-            <label htmlFor="topic-name" className="text-xs font-medium text-muted-foreground">
+            <label
+              htmlFor="topic-name"
+              className="text-xs font-medium text-muted-foreground"
+            >
               新規トピック追加
             </label>
             <div className="mt-2 flex gap-2">
@@ -341,7 +352,10 @@ export default function HomePage() {
                 disabled={savingTopic}
                 autoComplete="off"
               />
-              <Button type="submit" disabled={savingTopic || !isSupabaseConfigured}>
+              <Button
+                type="submit"
+                disabled={savingTopic || !isSupabaseConfigured}
+              >
                 <Plus />
                 追加
               </Button>
@@ -362,48 +376,32 @@ export default function HomePage() {
                     : "左のトピックを選ぶと、記事がここに並びます"}
                 </p>
               </div>
-              <Button
-                type="button"
-                variant={showRead ? "secondary" : "outline"}
-                onClick={() => setShowRead((current) => !current)}
-                aria-pressed={showRead}
-              >
-                {showRead ? "既読を隠す" : "既読を表示"}
-              </Button>
-            </div>
-
-            {selectedTopic ? (
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-                <div className="min-w-0 flex-1">
-                  <label
-                    htmlFor="feed-url"
-                    className="text-xs font-medium text-muted-foreground"
-                  >
-                    このトピックの RSS URL
-                  </label>
-                  <Input
-                    id="feed-url"
-                    className="mt-1.5"
-                    value={feedUrl}
-                    onChange={(event) => {
-                      const value = event.target.value;
-                      setFeedUrlInput(value);
-                      setFeedUrl(selectedTopic.id, value);
-                    }}
-                    placeholder="例: https://www.nasa.gov/rss/dyn/breaking_news.rss"
-                    disabled={curating}
-                    autoComplete="off"
-                  />
-                </div>
+              <div className="flex flex-wrap items-center gap-2">
                 <Button
                   type="button"
-                  onClick={() => void handleCurateNow()}
-                  disabled={curating || !selectedTopic}
+                  variant={showRead ? "secondary" : "outline"}
+                  onClick={() => setShowRead((current) => !current)}
+                  aria-pressed={showRead}
                 >
-                  <RefreshCw className={cn(curating && "animate-spin")} />
-                  {curating ? "取得中..." : "今すぐ取得"}
+                  {showRead ? "既読を隠す" : "既読を表示"}
                 </Button>
+                {selectedTopic ? (
+                  <Button
+                    type="button"
+                    onClick={() => void handleCurateNow()}
+                    disabled={curating}
+                  >
+                    <RefreshCw className={cn(curating && "animate-spin")} />
+                    {curating ? "取得中..." : "今すぐ取得"}
+                  </Button>
+                ) : null}
               </div>
+            </div>
+            {selectedTopic ? (
+              <p className="text-xs text-muted-foreground">
+                「今すぐ取得」で Google News（日本）から「{selectedTopic.name}
+                」の最新記事 1 件を取り込みます。
+              </p>
             ) : null}
           </div>
 
@@ -414,10 +412,14 @@ export default function HomePage() {
               ) : null}
 
               {selectedTopic && articlesLoading ? (
-                <p className="py-10 text-sm text-muted-foreground">記事を読み込んでいます...</p>
+                <p className="py-10 text-sm text-muted-foreground">
+                  記事を読み込んでいます...
+                </p>
               ) : null}
 
-              {selectedTopic && !articlesLoading && visibleArticles.length === 0 ? (
+              {selectedTopic &&
+              !articlesLoading &&
+              visibleArticles.length === 0 ? (
                 <EmptyState
                   text={
                     articles.length > 0
@@ -468,7 +470,9 @@ function ArticleCard({
     <Card className={cn(article.is_read && "opacity-60 saturate-50")}>
       <CardHeader>
         <div className="flex flex-wrap items-center gap-2">
-          <Badge className={importanceClassName[level]}>重要度 {importanceLabel[level]}</Badge>
+          <Badge className={importanceClassName[level]}>
+            重要度 {importanceLabel[level]}
+          </Badge>
           <span className="text-xs text-muted-foreground">
             {formatPublishedAt(article.published_at)}
           </span>
@@ -489,7 +493,9 @@ function ArticleCard({
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <p className="text-xs font-medium tracking-wide text-muted-foreground">AI要約</p>
+        <p className="text-xs font-medium tracking-wide text-muted-foreground">
+          AI要約
+        </p>
         <p className="mt-1.5 text-sm leading-7">
           {article.summary?.trim() ? article.summary : "要約はまだありません。"}
         </p>

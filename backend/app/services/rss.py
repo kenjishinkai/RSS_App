@@ -1,12 +1,7 @@
 """RSS 取得サービス。
 
-役割: 各サイトの RSS（新着リスト）を取りに行き、記事の候補一覧にする。
-たとえ: 配達員が各新聞社の速報ボードを見て、タイトルと URL をメモしてくる。
-
-手順:
-1. httpx で feed_url の中身（XML）を取る
-2. feedparser で title / link / published を取り出す
-3. 呼び出し元で「すでに DB にある URL」を除く
+feed_url から XML を取得し、title / url / published_at / raw_summary の一覧にする。
+記事全文のクロールはしない（RSS に載っている情報のみ）。
 """
 
 from __future__ import annotations
@@ -21,7 +16,8 @@ from typing import Any
 import feedparser
 import httpx
 
-# 一部サイトは「誰が取りに来たか」を見るので、ブラウザっぽい名乗を付ける
+from app.logging_utils import log_call
+
 _USER_AGENT = "RSS-App-Curation/0.1 (+https://localhost; feed fetcher)"
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -38,15 +34,12 @@ class FeedFetchError(Exception):
     """RSS の取得や解析に失敗したときのエラー。"""
 
 
+@log_call
 def fetch_feed_items(feed_url: str, *, timeout: float = 20.0) -> list[FeedItem]:
-    """指定した RSS URL から記事候補を返す。
-
-    Args:
-        feed_url: RSS / Atom の URL
-        timeout: 通信の待ち時間（秒）。たとえ: 呼び鈴を何秒待つか
+    """指定した RSS / Atom URL から記事候補を返す。
 
     Raises:
-        FeedFetchError: URL が空、通信失敗、記事が1件も取れないとき
+        FeedFetchError: URL が空、通信失敗、有効な記事が無いとき
     """
     url = (feed_url or "").strip()
     if not url:
@@ -59,7 +52,10 @@ def fetch_feed_items(feed_url: str, *, timeout: float = 20.0) -> list[FeedItem]:
             follow_redirects=True,
             headers={
                 "User-Agent": _USER_AGENT,
-                "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+                "Accept": (
+                    "application/rss+xml, application/atom+xml, "
+                    "application/xml, text/xml;q=0.9, */*;q=0.8"
+                ),
             },
         )
         response.raise_for_status()
@@ -84,7 +80,9 @@ def fetch_feed_items(feed_url: str, *, timeout: float = 20.0) -> list[FeedItem]:
         items.append(item)
 
     if not items:
-        raise FeedFetchError(f"有効なタイトルと URL を持つ記事がありませんでした: {url}")
+        raise FeedFetchError(
+            f"有効なタイトルと URL を持つ記事がありませんでした: {url}"
+        )
 
     return items
 
@@ -92,35 +90,28 @@ def fetch_feed_items(feed_url: str, *, timeout: float = 20.0) -> list[FeedItem]:
 def _entry_to_item(entry: Any) -> FeedItem | None:
     title = _clean_text(getattr(entry, "title", None))
     link = _clean_text(getattr(entry, "link", None))
-
     if not title or not link:
         return None
 
     summary = _clean_text(
-        getattr(entry, "summary", None)
-        or getattr(entry, "description", None)
+        getattr(entry, "summary", None) or getattr(entry, "description", None)
     )
-    published_at = _resolve_published_at(entry)
-
     return FeedItem(
         title=title,
         url=link,
-        published_at=published_at,
+        published_at=_resolve_published_at(entry),
         raw_summary=summary,
     )
 
 
 def _resolve_published_at(entry: Any) -> str | None:
-    """公開日時を ISO 8601（UTC）文字列にする。取れなければ None。"""
     for parsed_key in ("published_parsed", "updated_parsed"):
-        value = getattr(entry, parsed_key, None)
-        iso = _struct_time_to_iso(value)
+        iso = _struct_time_to_iso(getattr(entry, parsed_key, None))
         if iso:
             return iso
 
     for raw_key in ("published", "updated"):
-        raw = getattr(entry, raw_key, None)
-        iso = _raw_date_to_iso(raw)
+        iso = _raw_date_to_iso(getattr(entry, raw_key, None))
         if iso:
             return iso
 

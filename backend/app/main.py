@@ -1,21 +1,20 @@
 """FastAPI の入口。
 
 起動例（backend フォルダで）:
-  python -m venv .venv
-  .venv\\Scripts\\activate
-  pip install -r requirements.txt
   uvicorn app.main:app --reload --port 8000
 
-ヘルスチェック: GET http://localhost:8000/health
-手動キュレート: POST http://localhost:8000/jobs/curate
+GET  /health
+POST /jobs/curate
 """
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
+from app.logging_utils import log_call, setup_logging
 from app.routers import jobs
 
+setup_logging()
 settings = get_settings()
 
 app = FastAPI(
@@ -39,11 +38,12 @@ app.include_router(jobs.router)
 
 
 @app.get("/health")
+@log_call
 def health() -> dict[str, object]:
-    """サーバーが生きているかの簡単な確認。"""
+    """生存確認と設定の有無を返す。"""
     return {
         "status": "ok",
         "supabase_configured": settings.is_supabase_configured,
-        "openai_configured": settings.is_openai_configured,
-        "openai_model": settings.openai_model,
+        "gemini_configured": settings.is_gemini_configured,
+        "gemini_model": settings.gemini_model,
     }

@@ -46,8 +46,8 @@ RSS → backend（rss → ai → supabase_writer）→ Supabase ← frontend ←
 | `frontend/.env.local` | `NEXT_PUBLIC_BACKEND_URL` | バックエンドの住所（省略時 `http://localhost:8000`） |
 | `backend/.env` | `SUPABASE_URL` | 同じ住所 |
 | `backend/.env` | `SUPABASE_SERVICE_ROLE_KEY` | **秘密のマスターキー**（ブラウザに出さない） |
-| `backend/.env` | `OPENAI_API_KEY` | AI 用（要約・重要度） |
-| `backend/.env` | `OPENAI_MODEL` | 省略可（既定: `gpt-4o-mini`） |
+| `backend/.env` | `GEMINI_API_KEY` | Gemini 用 API キー（要約・重要度。Google AI Studio で発行） |
+| `backend/.env` | `GEMINI_MODEL` | 省略可（既定: `gemini-2.0-flash`） |
 
 テンプレート:
 
@@ -83,12 +83,12 @@ uvicorn app.main:app --reload --port 8000
 → ヘルスチェック: http://localhost:8000/health  
 → API ドキュメント: http://localhost:8000/docs
 
-手動キュレーション（骨組み）の例:
+手動キュレーションの例（トピック名で Google News 最新 1 件）:
 
 ```powershell
 curl -X POST http://localhost:8000/jobs/curate `
   -H "Content-Type: application/json" `
-  -d "{\"topic_id\":\"あなたのトピックID\",\"feed_url\":\"https://example.com/feed.xml\"}"
+  -d "{\"topic_id\":\"あなたのトピックID\",\"topic_name\":\"人工知能\"}"
 ```
 
 ## バックエンドのファイル案内
@@ -109,4 +109,3 @@ curl -X POST http://localhost:8000/jobs/curate `
 3. ~~`ai.py` で LLM 要約・重要度を実装する~~ ✅  
 4. ~~（任意）フロントに「今すぐ取得」ボタンを付けて `/jobs/curate` を呼ぶ~~ ✅  
 5. （任意）OS のタスクスケジューラや GitHub Actions で定期実行する  
-6. （任意）`topics` に `feed_url` 列を追加し、ブラウザの localStorage メモから卒業する  

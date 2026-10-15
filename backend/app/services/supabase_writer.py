@@ -1,12 +1,7 @@
 """Supabase への書き込みサービス。
 
-役割: 加工済みの記事を articles テーブルへ INSERT する。
-たとえ: 倉庫（Supabase）への入庫係。マスターキー（service_role）はここだけで使う。
-
-手順:
-1. create_client(url, service_role_key) で倉庫の専用口を開く
-2. 既存 URL を select して重複を避ける
-3. articles に topic_id, title, url, summary, importance, is_read=false を insert
+service_role キーで articles の既存 URL 照会と INSERT を行う。
+フロント（anon）からは INSERT しない。
 """
 
 from __future__ import annotations
@@ -18,8 +13,8 @@ from typing import Any
 from supabase import Client, create_client
 
 from app.config import Settings, get_settings
+from app.logging_utils import log_call
 
-# PostgREST の1回の取得上限に合わせて、ページをめくりながら全部取る
 _PAGE_SIZE = 1000
 
 
@@ -42,12 +37,9 @@ def _cached_client(url: str, key: str) -> Client:
     return create_client(url, key)
 
 
+@log_call
 def get_client(settings: Settings | None = None) -> Client:
-    """設定済みの Supabase クライアントを返す。
-
-    Raises:
-        SupabaseWriterError: URL か service_role キーが未設定のとき
-    """
+    """設定済みの Supabase クライアントを返す。"""
     cfg = settings or get_settings()
     if not cfg.is_supabase_configured:
         raise SupabaseWriterError(
@@ -57,6 +49,7 @@ def get_client(settings: Settings | None = None) -> Client:
     return _cached_client(cfg.supabase_url, cfg.supabase_service_role_key)
 
 
+@log_call
 def list_existing_urls(topic_id: str, settings: Settings | None = None) -> set[str]:
     """トピック内の既存 URL 集合を返す（重複防止用）。"""
     cfg = settings or get_settings()
@@ -92,15 +85,12 @@ def list_existing_urls(topic_id: str, settings: Settings | None = None) -> set[s
     return urls
 
 
+@log_call
 def insert_articles(
     drafts: list[ArticleDraft],
     settings: Settings | None = None,
 ) -> int:
-    """記事の下書きを articles に書き込む。戻り値は挿入件数。
-
-    設定が無いとき、または下書きが空のときは 0 を返す。
-    すでに同じ URL がある行は入れない（二重に倉庫へ入れないため）。
-    """
+    """記事の下書きを articles に書き込む。戻り値は挿入件数。"""
     cfg = settings or get_settings()
     if not cfg.is_supabase_configured or not drafts:
         return 0
@@ -140,7 +130,7 @@ def insert_articles(
     client = get_client(cfg)
     try:
         response = client.table("articles").insert(rows).execute()
-    except Exception as exc:  # supabase-py は状況により例外の型が違う
+    except Exception as exc:
         raise SupabaseWriterError(
             "articles への書き込みに失敗しました。"
             " テーブル名・RLS・service_role キーを確認してください。"

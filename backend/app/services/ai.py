@@ -1,12 +1,8 @@
 """AI 要約・重要度サービス。
 
-役割: 記事本文（または RSS の短い説明）から summary と importance を作る。
-たとえ: 編集部が記事を読み、「一言まとめ」と「高・中・低」の札を付ける。
-
-手順:
-1. OPENAI_API_KEY があれば OpenAI API で要約を生成する
-2. importance は high / medium / low に正規化する
-3. キー未設定や失敗時は、安全なデフォルト（短い要約 or タイトル、importance=low）にする
+GEMINI_API_KEY があれば Google Gemini で要約と importance（high/medium/low）を付ける。
+キー未設定・失敗時は短い要約と importance=low にフォールバックする。
+OAuth は使わず、API キーのみで呼ぶ。
 """
 
 from __future__ import annotations
@@ -16,14 +12,17 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any
-
 import httpx
 
 from app.config import Settings, get_settings
+from app.logging_utils import log_call
 
 logger = logging.getLogger(__name__)
 
-_OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+_GEMINI_URL_TEMPLATE = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "{model}:generateContent"
+)
 _MAX_INPUT_CHARS = 4000
 _MAX_SUMMARY_CHARS = 280
 
@@ -50,6 +49,7 @@ class ArticleEnrichment:
     used_ai: bool = False
 
 
+@log_call
 def enrich_article(
     title: str,
     content: str | None = None,
@@ -60,11 +60,11 @@ def enrich_article(
     clean_title = (title or "").strip() or "無題"
     clean_content = (content or "").strip() or None
 
-    if not cfg.is_openai_configured:
+    if not cfg.is_gemini_configured:
         return _fallback(clean_title, clean_content, used_ai=False)
 
     try:
-        return _enrich_with_openai(clean_title, clean_content, cfg)
+        return _enrich_with_gemini(clean_title, clean_content, cfg)
     except Exception as exc:
         logger.warning("AI 要約に失敗したためフォールバックします: %s", exc)
         return _fallback(clean_title, clean_content, used_ai=False)
@@ -80,8 +80,6 @@ def normalize_importance(value: str | None) -> str:
         return "medium"
     if normalized in {"low", "低", "低い"}:
         return "low"
-
-    # 英語の一部表現にも軽く対応
     if "high" in normalized or "critical" in normalized:
         return "high"
     if "medium" in normalized or "moderate" in normalized:
@@ -89,7 +87,8 @@ def normalize_importance(value: str | None) -> str:
     return "low"
 
 
-def _enrich_with_openai(
+@log_call
+def _enrich_with_gemini(
     title: str,
     content: str | None,
     settings: Settings,
@@ -99,30 +98,35 @@ def _enrich_with_openai(
         f"タイトル: {title}\n\n"
         f"本文または説明:\n{body_text[:_MAX_INPUT_CHARS]}"
     )
+    prompt = f"{_SYSTEM_PROMPT}\n\n{user_prompt}"
+
+    model = (settings.gemini_model or "gemini-2.0-flash").strip()
+    url = _GEMINI_URL_TEMPLATE.format(model=model)
 
     payload = {
-        "model": settings.openai_model,
-        "temperature": 0.2,
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": prompt}],
+            }
         ],
+        "generationConfig": {
+            "temperature": 0.2,
+            "responseMimeType": "application/json",
+        },
     }
 
     with httpx.Client(timeout=45.0) as client:
         response = client.post(
-            _OPENAI_URL,
-            headers={
-                "Authorization": f"Bearer {settings.openai_api_key}",
-                "Content-Type": "application/json",
-            },
+            url,
+            params={"key": settings.gemini_api_key.strip()},
+            headers={"Content-Type": "application/json"},
             json=payload,
         )
         response.raise_for_status()
         data = response.json()
 
-    raw_text = _extract_message_text(data)
+    raw_text = _extract_gemini_text(data)
     parsed = _parse_json_object(raw_text)
     summary = _clip_summary(str(parsed.get("summary") or "").strip() or None)
     if not summary:
@@ -135,24 +139,21 @@ def _enrich_with_openai(
     )
 
 
-def _extract_message_text(data: dict[str, Any]) -> str:
+def _extract_gemini_text(data: dict[str, Any]) -> str:
     try:
-        content = data["choices"][0]["message"]["content"]
+        parts = data["candidates"][0]["content"]["parts"]
     except (KeyError, IndexError, TypeError) as exc:
-        raise ValueError("OpenAI の応答形式が想定外です") from exc
+        raise ValueError("Gemini の応答形式が想定外です") from exc
 
-    if isinstance(content, list):
-        # 一部の応答は parts 配列になることがある
-        texts = [
-            str(part.get("text", ""))
-            for part in content
-            if isinstance(part, dict)
-        ]
-        return "\n".join(texts).strip()
+    texts: list[str] = []
+    for part in parts:
+        if isinstance(part, dict) and isinstance(part.get("text"), str):
+            texts.append(part["text"])
 
-    if not isinstance(content, str) or not content.strip():
-        raise ValueError("OpenAI の応答が空です")
-    return content.strip()
+    joined = "\n".join(texts).strip()
+    if not joined:
+        raise ValueError("Gemini の応答が空です")
+    return joined
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:
@@ -163,7 +164,6 @@ def _parse_json_object(text: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         pass
 
-    # 余計な前後テキストが付いた場合に備える
     match = re.search(r"\{.*\}", text, flags=re.DOTALL)
     if not match:
         raise ValueError("JSON を取り出せませんでした")

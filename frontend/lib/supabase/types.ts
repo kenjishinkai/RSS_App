@@ -1,7 +1,9 @@
 /**
  * Supabase の表（テーブル）の形。
- * 表の列名と、ここに書いた名前が一致している必要があります。
+ * 列名は DB 側と一致している必要がある。
+ * feed_url 列は無い（取得元は Google News 固定）。
  */
+
 export type Topic = {
   id: string;
   name: string;
@@ -21,7 +23,7 @@ export type Article = {
 
 export type ImportanceLevel = "high" | "medium" | "low";
 
-/** 高・中・低（英語の high / medium / low も受け付ける） */
+/** high / medium / low（日本語の 高 / 中 も受け付ける） */
 export function toImportanceLevel(
   value: string | null | undefined,
 ): ImportanceLevel {

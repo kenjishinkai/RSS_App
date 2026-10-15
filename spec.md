@@ -16,7 +16,7 @@
 | データの保管 | Supabase（PostgreSQL） | 表（テーブル）に保存する倉庫 |
 
 ```text
-RSS → backend（rss → ai → supabase_writer）→ Supabase ← frontend ← ブラウザ
+Google News RSS → backend（rss → 最新1件 → ai → supabase_writer）→ Supabase ← frontend ← ブラウザ
 ```
 
 ---
@@ -29,8 +29,7 @@ RSS → backend（rss → ai → supabase_writer）→ Supabase ← frontend ←
 - トピックごとの記事一覧（公開日時の新しい順）
 - 未読のみ表示 / 既読も含めて表示の切替
 - 記事を既読にする
-- トピックごとの RSS URL 入力と記憶（ブラウザの localStorage）
-- 「今すぐ取得」で手動キュレーション（RSS 取得 → 重複除外 → AI 要約 → DB 書き込み）
+- 「今すぐ取得」で Google News（日本向け）から、選択中トピック名の**最新記事 1 件**を取得（重複除外 → AI 要約 → DB 書き込み）
 - AI キー未設定・失敗時のフォールバック（短い要約と `importance=low`）
 
 ### できないこと（未実装）
@@ -38,7 +37,7 @@ RSS → backend（rss → ai → supabase_writer）→ Supabase ← frontend ←
 - ログイン / 認証
 - 定期自動取得（cron など）
 - トピックの編集・削除 UI
-- RSS URL を DB の `topics` 列として保存すること（現状はブラウザのみ）
+- 任意の RSS URL を指定して取得すること（取得元は Google News 固定）
 - 記事全文のクロール（RSS に載っている情報を使う）
 
 ---
@@ -57,7 +56,6 @@ RSS_App/
 |------|------|
 | `frontend/app/page.tsx` | 画面本体（1 ページ） |
 | `frontend/lib/supabase/` | Supabase クライアントと型 |
-| `frontend/lib/feed-urls.ts` | RSS URL の localStorage 保存 |
 | `frontend/lib/backend.ts` | `POST /jobs/curate` の呼び出し |
 | `backend/app/main.py` | FastAPI 入口・`GET /health` |
 | `backend/app/routers/jobs.py` | `POST /jobs/curate` |
@@ -78,27 +76,29 @@ RSS_App/
 
 - ヘッダー: アプリ名「ニュースデスク」
 - 左（または上）: トピック一覧と新規追加
-- 右（または下）: 選択中トピックの RSS URL・「今すぐ取得」・記事一覧
+- 右（または下）: 「今すぐ取得」・記事一覧
 
 ### 4.2 トピック
 
 | 操作 | 動き |
 |------|------|
 | 一覧 | Supabase `topics` を `created_at` 昇順で取得 |
-| 選択 | そのトピックの記事を読み込み、保存済み RSS URL を入力欄に表示 |
+| 選択 | そのトピックの記事を読み込む |
 | 追加 | 名前を入力して `topics` に INSERT。追加後にそのトピックを選択 |
 
 トピックの編集・削除 UI はありません。
 
-### 4.3 RSS URL と「今すぐ取得」
+### 4.3 「今すぐ取得」
 
 | 項目 | 内容 |
 |------|------|
-| 保存先 | ブラウザ localStorage、キー `rss-app.topic-feed-urls` |
-| 保存単位 | トピック ID → URL の対応 |
-| 今すぐ取得 | 選択中トピック ID と入力 URL を `POST /jobs/curate` に送る。成功後に記事一覧を再読込 |
+| 取得元 | Google News RSS（日本向け固定） |
+| 検索語 | 選択中トピックの `name` |
+| 件数 | フィード内で公開日時が最も新しい **1 件** |
+| API | `topic_id` と `topic_name` を `POST /jobs/curate` に送る。成功後に記事一覧を再読込 |
 
-URL が空のときは取得できません。バックエンド未起動時はエラーメッセージを表示します。
+トピック未選択時は取得できません。バックエンド未起動時はエラーメッセージを表示します。  
+同じ最新記事が既に DB にある場合は書き込み 0 件になります。
 
 ### 4.4 記事一覧
 
@@ -126,7 +126,7 @@ URL が空のときは取得できません。バックエンド未起動時は�
 | `name` | string | トピック名 |
 | `created_at` | timestamptz（string） | 作成日時 |
 
-`feed_url` 列はありません。RSS URL は DB 外（localStorage）です。
+`feed_url` 列はありません。取得元 URL は backend が Google News から組み立てます。
 
 ### 5.2 `articles`
 
@@ -164,40 +164,48 @@ URL が空のときは取得できません。バックエンド未起動時は�
 {
   "status": "ok",
   "supabase_configured": true,
-  "openai_configured": true,
-  "openai_model": "gpt-4o-mini"
+  "gemini_configured": true,
+  "gemini_model": "gemini-2.0-flash"
 }
 ```
 
 ### 6.2 `POST /jobs/curate`
 
-1 トピック分のキュレーションを手動実行します。
+選択トピック名で Google News（日本）を検索し、最新 1 件を取り込んで手動実行します。
 
 **リクエスト**
 
 ```json
 {
   "topic_id": "トピックのUUID",
-  "feed_url": "https://example.com/feed.xml"
+  "topic_name": "人工知能"
 }
+```
+
+`topic_id` / `topic_name` が空文字のときは検証エラー（通常 422）です。
+
+内部で使う RSS URL の形（参考）:
+
+```text
+https://news.google.com/rss/search?q={topic_name}&hl=ja&gl=JP&ceid=JP:ja
 ```
 
 **成功レスポンス**
 
 ```json
 {
-  "fetched": 10,
-  "new_items": 3,
-  "inserted": 3,
-  "message": "RSS から 10 件取得し、新規 3 件、書き込み 3 件です。AI 要約 3 件。"
+  "fetched": 1,
+  "new_items": 1,
+  "inserted": 1,
+  "message": "Google News から最新 1 件を選び、新規 1 件、書き込み 1 件です。AI 要約 1 件。"
 }
 ```
 
 | フィールド | 意味 |
 |------------|------|
-| `fetched` | RSS から取れた件数 |
-| `new_items` | DB にまだ無い URL の件数 |
-| `inserted` | 実際に書き込んだ件数 |
+| `fetched` | 最新候補として選んだ件数（最大 1） |
+| `new_items` | DB にまだ無い URL の件数（0 または 1） |
+| `inserted` | 実際に書き込んだ件数（0 または 1） |
 | `message` | 人向けの結果説明 |
 
 **失敗**
@@ -214,14 +222,17 @@ CORS は `CORS_ORIGINS`（既定 `http://localhost:3000`）で許可します。
 入口: `POST /jobs/curate` → `run_curation`（`backend/app/services/curate.py`）
 
 ```text
-1. rss.fetch_feed_items(feed_url)          … RSS を取得・パース
-2. supabase_writer.list_existing_urls(...) … 同一トピックの既存 URL を取得
-3. 既存 URL を除いた新規だけ残す
-4. ai.enrich_article(...)                  … 要約・重要度を付与
-5. supabase_writer.insert_articles(...)    … articles に INSERT
+1. topic_name から Google News（日本）RSS URL を組み立てる
+2. rss.fetch_feed_items(...)               … RSS を取得・パース
+3. 公開日時が最も新しい 1 件だけ残す
+4. supabase_writer.list_existing_urls(...) … 同一トピックの既存 URL を取得
+5. 既存 URL ならスキップ、新規なら続行
+6. ai.enrich_article(...)                  … 要約・重要度を付与
+7. supabase_writer.insert_articles(...)    … articles に INSERT
 ```
 
-AI（`OPENAI_API_KEY`）が無い、または呼び出しに失敗した場合でも、取得と書き込みは続行します（フォールバック要約、`importance=low`）。
+AI（`GEMINI_API_KEY`）が無い、または呼び出しに失敗した場合でも、取得と書き込みは続行します（フォールバック要約、`importance=low`）。  
+要約には Google Gemini を使い、認証は API キーのみ（OAuth ログインは不要）です。
 
 ---
 
@@ -236,8 +247,8 @@ AI（`OPENAI_API_KEY`）が無い、または呼び出しに失敗した場合�
 | `frontend/.env.local` | `NEXT_PUBLIC_BACKEND_URL` | バックエンド URL（省略時 `http://localhost:8000`） |
 | `backend/.env` | `SUPABASE_URL` | 同じ Supabase URL |
 | `backend/.env` | `SUPABASE_SERVICE_ROLE_KEY` | 秘密のマスターキー（ブラウザに出さない） |
-| `backend/.env` | `OPENAI_API_KEY` | AI 用（未設定でも取得・書き込みは動く） |
-| `backend/.env` | `OPENAI_MODEL` | 省略可（既定 `gpt-4o-mini`） |
+| `backend/.env` | `GEMINI_API_KEY` | Gemini API キー（未設定でも取得・書き込みは動く） |
+| `backend/.env` | `GEMINI_MODEL` | 省略可（既定 `gemini-2.0-flash`） |
 | `backend/.env` | `CORS_ORIGINS` | 許可するフロント起源（既定 `http://localhost:3000`） |
 
 テンプレート: [`frontend/.env.example`](frontend/.env.example)、[`backend/.env.example`](backend/.env.example)
@@ -270,9 +281,56 @@ uvicorn app.main:app --reload --port 8000
 
 ---
 
-## 9. 既知の制限
+## 9. ログ仕様（backend）
 
-- RSS URL はブラウザごとに覚える。別端末・別ブラウザでは引き継がれない
+対象は **backend のみ**（frontend には出さない）。
+
+### 9.1 出力先
+
+| 項目 | 内容 |
+|------|------|
+| フォルダ | アプリルート直下の `Logs/`（無ければ起動時に作成） |
+| ファイル名 | `backend_YYYY-MM-DD.log`（例: `backend_2026-10-15.log`） |
+| パス例 | `RSS_App/Logs/backend_2026-10-15.log` |
+| コンソール | **出さない**（ファイルのみ） |
+
+日付は起動・設定時点の当日。日付が変わると新しいファイル名になる。
+
+### 9.2 出す内容
+
+対象メソッドごとに、次の3種を出す。
+
+| タイミング | レベル | メッセージの形 |
+|------------|--------|----------------|
+| 開始 | INFO | `開始: 関数名(引数…)` |
+| 正常終了 | INFO | `終了: 関数名` |
+| 例外 | ERROR | `例外: 関数名` ＋ 例外の内容（スタックトレース付き）。例外はそのまま再送出 |
+
+共通実装は [`backend/app/logging_utils.py`](backend/app/logging_utils.py) の `@log_call` と `setup_logging()`。
+
+### 9.3 対象メソッド
+
+| 場所 | 関数 |
+|------|------|
+| `main.py` | `health` |
+| `routers/jobs.py` | `curate_now` |
+| `services/curate.py` | `run_curation`, `build_google_news_feed_url`, `pick_latest_item` |
+| `services/rss.py` | `fetch_feed_items` |
+| `services/ai.py` | `enrich_article`, `_enrich_with_gemini` |
+| `services/supabase_writer.py` | `get_client`, `list_existing_urls`, `insert_articles` |
+
+小さな内部ヘルパー（例: `_clean_text`）は対象外。
+
+### 9.4 秘密情報
+
+`GEMINI_API_KEY` や `SUPABASE_SERVICE_ROLE_KEY` など、API キー／秘密鍵はログに出さない。
+
+---
+
+## 10. 既知の制限
+
+- 取得元は Google News（日本）固定。任意の RSS サイトは指定できない
+- 1 回の取得で取り込むのは最新 1 件のみ。同じ最新記事が既にあると書き込み 0 件
 - 画面にログインがないため、RLS と鍵の扱いを誤るとデータが広く見える可能性がある
 - AI 未設定時は要約品質が下がる（タイトルや RSS 説明の切り出し相当）
 - 定期取得は手動の「今すぐ取得」か、外部スケジューラで API を叩く必要がある
@@ -280,7 +338,7 @@ uvicorn app.main:app --reload --port 8000
 
 ---
 
-## 10. 関連ドキュメント
+## 11. 関連ドキュメント
 
 | 文書 | 内容 |
 |------|------|

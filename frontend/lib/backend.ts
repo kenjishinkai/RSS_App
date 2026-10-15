@@ -1,6 +1,6 @@
 /**
  * バックエンド（FastAPI）への連絡先。
- * たとえ: 編集室への内線番号。画面から「今すぐ取得」を頼むときに使う。
+ * 「今すぐ取得」で POST /jobs/curate を呼ぶ。
  */
 
 export const backendBaseUrl = (
@@ -16,14 +16,15 @@ export type CurateResult = {
 
 export async function runCurateJob(input: {
   topicId: string;
-  feedUrl: string;
+  topicName: string;
 }): Promise<CurateResult> {
   const response = await fetch(`${backendBaseUrl}/jobs/curate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      topic_id: input.topicId,
-      feed_url: input.feedUrl,
+      // 数字 ID でも必ず文字列で送る（Pydantic の string 検証用）
+      topic_id: String(input.topicId),
+      topic_name: String(input.topicName),
     }),
   });
 
