@@ -1,0 +1,16 @@
+# コピーして terraform.tfvars を作り、パスワードを埋めてください。
+#   copy terraform.tfvars.example terraform.tfvars
+#
+# terraform.tfvars は Git に上げないでください。
+
+pg_host               = "127.0.0.1"
+pg_port               = 5432
+pg_admin_database     = "postgres"
+pg_superuser          = "postgres"
+pg_superuser_password = "CHANGE_ME_SUPERUSER_PASSWORD"
+pg_sslmode            = "disable"
+
+app_db_name       = "newsdesk"
+app_test_db_name  = "newsdesk_test"
+app_user          = "newsdesk"
+app_password      = "CHANGE_ME_APP_PASSWORD"

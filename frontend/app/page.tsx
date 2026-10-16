@@ -1,13 +1,18 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
   Check,
   CircleAlert,
   ExternalLink,
+  LogOut,
   Newspaper,
+  Pencil,
   Plus,
   RefreshCw,
+  Star,
+  Trash2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,15 +25,31 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { runCurateJob } from "@/lib/backend";
+import {
+  AuthRequiredError,
+  type AuthUser,
+  fetchMe,
+  logoutUser,
+} from "@/lib/auth";
+import {
+  createTopic,
+  deleteArticle,
+  deleteTopic,
+  fetchArticles,
+  fetchTopics,
+  markArticleFavorite,
+  markArticleRead,
+  runCurateJob,
+  unmarkArticleFavorite,
+  updateTopic,
+} from "@/lib/backend";
 import { withLog } from "@/lib/logging";
-import { isSupabaseConfigured, supabase } from "@/lib/supabase/client";
 import {
   importanceLabel,
   toImportanceLevel,
   type Article,
   type Topic,
-} from "@/lib/supabase/types";
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const importanceClassName = {
@@ -57,21 +78,29 @@ function formatPublishedAt(value: string | null) {
 }
 
 export default function HomePage() {
+  const router = useRouter();
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [authChecking, setAuthChecking] = useState(true);
   const [topics, setTopics] = useState<Topic[]>([]);
   const [articles, setArticles] = useState<Article[]>([]);
   const [selectedTopicId, setSelectedTopicId] = useState<string | null>(null);
-  const [topicsLoading, setTopicsLoading] = useState(isSupabaseConfigured);
+  const [topicsLoading, setTopicsLoading] = useState(true);
   const [articlesLoading, setArticlesLoading] = useState(false);
   const [savingTopic, setSavingTopic] = useState(false);
+  const [editingTopic, setEditingTopic] = useState(false);
+  const [editTopicName, setEditTopicName] = useState("");
+  const [updatingTopic, setUpdatingTopic] = useState(false);
+  const [deletingTopic, setDeletingTopic] = useState(false);
   const [readingId, setReadingId] = useState<string | null>(null);
+  const [favoritingId, setFavoritingId] = useState<string | null>(null);
+  const [deletingArticleId, setDeletingArticleId] = useState<string | null>(
+    null,
+  );
   const [showRead, setShowRead] = useState(false);
   const [curating, setCurating] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [articlesRefreshKey, setArticlesRefreshKey] = useState(0);
-  const [message, setMessage] = useState<string | null>(
-    isSupabaseConfigured
-      ? null
-      : "Supabase の接続情報が未設定です。.env.example をコピーして .env.local を作り、URL と anon key を入れてから開発サーバーを再起動してください。",
-  );
+  const [message, setMessage] = useState<string | null>(null);
 
   const selectedTopic =
     topics.find((topic) => topic.id === selectedTopicId) ?? null;
@@ -80,88 +109,101 @@ export default function HomePage() {
     : articles.filter((article) => !article.is_read);
   const unreadCount = articles.filter((article) => !article.is_read).length;
 
-  useEffect(() => {
-    if (!supabase) {
-      return;
-    }
+  function redirectToLogin() {
+    router.replace("/login");
+  }
 
+  useEffect(() => {
     let ignore = false;
 
-    async function loadTopics() {
-      await withLog("loadTopics", {}, async () => {
-        const { data, error } = await supabase!
-          .from("topics")
-          .select("id, name, created_at")
-          .order("created_at", { ascending: true });
+    async function checkAuthAndLoadTopics() {
+      await withLog("checkAuthAndLoadTopics", {}, async () => {
+        try {
+          const me = await fetchMe();
+          if (ignore) {
+            return;
+          }
+          setUser(me);
+          setAuthChecking(false);
 
-        if (ignore) {
-          return;
-        }
-
-        if (error) {
-          setMessage(
-            "トピックを読み込めませんでした。テーブル名と、Supabase の読み取り許可（RLS）を確認してください。",
-          );
+          const nextTopics = await fetchTopics();
+          if (ignore) {
+            return;
+          }
+          const firstTopicId = nextTopics[0]?.id ?? null;
+          setTopics(nextTopics);
+          setSelectedTopicId(firstTopicId);
+          if (nextTopics.length > 0) {
+            setArticlesLoading(true);
+          }
           setTopicsLoading(false);
-          throw new Error(error.message);
+        } catch (error) {
+          if (ignore) {
+            return;
+          }
+          if (error instanceof AuthRequiredError) {
+            redirectToLogin();
+            return;
+          }
+          setMessage(
+            error instanceof Error
+              ? error.message
+              : "トピックを読み込めませんでした。バックエンド（uvicorn）が起動しているか確認してください。",
+          );
+          setAuthChecking(false);
+          setTopicsLoading(false);
+          throw error;
         }
-
-        const nextTopics = data ?? [];
-        const firstTopicId = nextTopics[0]?.id ?? null;
-        setTopics(nextTopics);
-        setSelectedTopicId(firstTopicId);
-        if (nextTopics.length > 0) {
-          setArticlesLoading(true);
-        }
-        setTopicsLoading(false);
       });
     }
 
-    void loadTopics().catch(() => {
-      setTopicsLoading(false);
+    void checkAuthAndLoadTopics().catch(() => {
+      if (!ignore) {
+        setAuthChecking(false);
+        setTopicsLoading(false);
+      }
     });
 
     return () => {
       ignore = true;
     };
-  }, []);
+  }, [router]);
 
   useEffect(() => {
-    if (!supabase || !selectedTopicId) {
+    if (!selectedTopicId) {
       return;
     }
 
-    const client = supabase;
     const topicId = selectedTopicId;
     let ignore = false;
 
     async function loadArticles() {
       await withLog("loadArticles", { topicId }, async () => {
         setArticlesLoading(true);
-
-        const { data, error } = await client
-          .from("articles")
-          .select(
-            "id, topic_id, title, url, summary, importance, is_read, published_at",
-          )
-          .eq("topic_id", topicId)
-          .order("published_at", { ascending: false, nullsFirst: false });
-
-        if (ignore) {
-          return;
-        }
-
-        if (error) {
+        try {
+          const data = await fetchArticles(topicId);
+          if (ignore) {
+            return;
+          }
+          setArticles(data);
+          setArticlesLoading(false);
+        } catch (error) {
+          if (ignore) {
+            return;
+          }
+          if (error instanceof AuthRequiredError) {
+            redirectToLogin();
+            return;
+          }
           setMessage(
-            "記事を読み込めませんでした。articles テーブルを確認してください。",
+            error instanceof Error
+              ? error.message
+              : "記事を読み込めませんでした。",
           );
           setArticles([]);
           setArticlesLoading(false);
-          throw new Error(error.message);
+          throw error;
         }
-
-        setArticles(data ?? []);
-        setArticlesLoading(false);
       });
     }
 
@@ -172,7 +214,7 @@ export default function HomePage() {
     return () => {
       ignore = true;
     };
-  }, [selectedTopicId, articlesRefreshKey]);
+  }, [selectedTopicId, articlesRefreshKey, router]);
 
   async function handleAddTopic(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -185,69 +227,233 @@ export default function HomePage() {
         return;
       }
 
-      if (!supabase) {
-        setMessage(
-          ".env.local に Supabase の URL と anon key を設定してください。",
-        );
-        return;
-      }
-
       setSavingTopic(true);
       setMessage(null);
 
-      const { data, error } = await supabase
-        .from("topics")
-        .insert({ name })
-        .select("id, name, created_at")
-        .single();
-
-      setSavingTopic(false);
-
-      if (error || !data) {
+      try {
+        const data = await createTopic(name);
+        setSavingTopic(false);
+        form.reset();
+        setTopics((current) => [...current, data]);
+        setSelectedTopicId(data.id);
+        setEditingTopic(false);
+      } catch (error) {
+        setSavingTopic(false);
+        if (error instanceof AuthRequiredError) {
+          redirectToLogin();
+          return;
+        }
         setMessage(
-          "トピックを追加できませんでした。書き込み許可（RLS）を確認してください。",
+          error instanceof Error
+            ? error.message
+            : "トピックを追加できませんでした。",
         );
-        throw new Error(error?.message ?? "トピック追加に失敗しました");
+        throw error;
       }
-
-      form.reset();
-      setTopics((current) => [...current, data]);
-      setSelectedTopicId(data.id);
     }).catch(() => {
       setSavingTopic(false);
     });
   }
 
-  async function handleMarkAsRead(articleId: string) {
-    if (!supabase) {
+  async function handleUpdateTopic(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedTopic) {
       return;
     }
 
+    const name = editTopicName.trim();
+    await withLog(
+      "handleUpdateTopic",
+      { topicId: selectedTopic.id, name },
+      async () => {
+        if (!name) {
+          setMessage("トピック名を入力してください。");
+          return;
+        }
+
+        setUpdatingTopic(true);
+        setMessage(null);
+
+        try {
+          const updated = await updateTopic(selectedTopic.id, name);
+          setTopics((current) =>
+            current.map((topic) =>
+              topic.id === updated.id ? updated : topic,
+            ),
+          );
+          setEditingTopic(false);
+          setUpdatingTopic(false);
+        } catch (error) {
+          setUpdatingTopic(false);
+          if (error instanceof AuthRequiredError) {
+            redirectToLogin();
+            return;
+          }
+          setMessage(
+            error instanceof Error
+              ? error.message
+              : "トピックを更新できませんでした。",
+          );
+          throw error;
+        }
+      },
+    ).catch(() => {
+      setUpdatingTopic(false);
+    });
+  }
+
+  async function handleDeleteTopic() {
+    if (!selectedTopic) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `トピック「${selectedTopic.name}」を削除しますか？\n記事が残っている場合は削除できません。`,
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    await withLog(
+      "handleDeleteTopic",
+      { topicId: selectedTopic.id },
+      async () => {
+        setDeletingTopic(true);
+        setMessage(null);
+
+        try {
+          const deletedId = selectedTopic.id;
+          await deleteTopic(deletedId);
+          const nextTopics = topics.filter((topic) => topic.id !== deletedId);
+          setTopics(nextTopics);
+          setSelectedTopicId(nextTopics[0]?.id ?? null);
+          setArticles([]);
+          setEditingTopic(false);
+          setDeletingTopic(false);
+          setMessage("トピックを削除しました。");
+        } catch (error) {
+          setDeletingTopic(false);
+          if (error instanceof AuthRequiredError) {
+            redirectToLogin();
+            return;
+          }
+          setMessage(
+            error instanceof Error
+              ? error.message
+              : "トピックを削除できませんでした。",
+          );
+          throw error;
+        }
+      },
+    ).catch(() => {
+      setDeletingTopic(false);
+    });
+  }
+
+  async function handleMarkAsRead(articleId: string) {
     await withLog("handleMarkAsRead", { articleId }, async () => {
       setReadingId(articleId);
       setMessage(null);
 
-      const { error } = await supabase
-        .from("articles")
-        .update({ is_read: true })
-        .eq("id", articleId);
-
-      setReadingId(null);
-
-      if (error) {
-        setMessage(
-          "既読に更新できませんでした。書き込み許可（RLS）を確認してください。",
+      try {
+        await markArticleRead(articleId);
+        setReadingId(null);
+        setArticles((current) =>
+          current.map((article) =>
+            article.id === articleId ? { ...article, is_read: true } : article,
+          ),
         );
-        throw new Error(error.message);
+      } catch (error) {
+        setReadingId(null);
+        if (error instanceof AuthRequiredError) {
+          redirectToLogin();
+          return;
+        }
+        setMessage(
+          error instanceof Error
+            ? error.message
+            : "既読に更新できませんでした。",
+        );
+        throw error;
       }
-
-      setArticles((current) =>
-        current.map((article) =>
-          article.id === articleId ? { ...article, is_read: true } : article,
-        ),
-      );
     }).catch(() => {
       setReadingId(null);
+    });
+  }
+
+  async function handleToggleFavorite(article: Article) {
+    await withLog(
+      "handleToggleFavorite",
+      { articleId: article.id, next: !article.is_favorite },
+      async () => {
+        setFavoritingId(article.id);
+        setMessage(null);
+
+        try {
+          const updated = article.is_favorite
+            ? await unmarkArticleFavorite(article.id)
+            : await markArticleFavorite(article.id);
+          setFavoritingId(null);
+          setArticles((current) =>
+            current.map((row) => (row.id === updated.id ? updated : row)),
+          );
+        } catch (error) {
+          setFavoritingId(null);
+          if (error instanceof AuthRequiredError) {
+            redirectToLogin();
+            return;
+          }
+          setMessage(
+            error instanceof Error
+              ? error.message
+              : "お気に入りの更新に失敗しました。",
+          );
+          throw error;
+        }
+      },
+    ).catch(() => {
+      setFavoritingId(null);
+    });
+  }
+
+  async function handleDeleteArticle(article: Article) {
+    const confirmed = window.confirm(
+      `記事「${article.title}」を削除しますか？\n削除すると全員の一覧から消えます。`,
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    await withLog(
+      "handleDeleteArticle",
+      { articleId: article.id },
+      async () => {
+        setDeletingArticleId(article.id);
+        setMessage(null);
+
+        try {
+          await deleteArticle(article.id);
+          setDeletingArticleId(null);
+          setArticles((current) =>
+            current.filter((row) => row.id !== article.id),
+          );
+          setMessage("記事を削除しました。");
+        } catch (error) {
+          setDeletingArticleId(null);
+          if (error instanceof AuthRequiredError) {
+            redirectToLogin();
+            return;
+          }
+          setMessage(
+            error instanceof Error
+              ? error.message
+              : "記事を削除できませんでした。",
+          );
+          throw error;
+        }
+      },
+    ).catch(() => {
+      setDeletingArticleId(null);
     });
   }
 
@@ -272,6 +478,10 @@ export default function HomePage() {
           setMessage(result.message);
           setArticlesRefreshKey((current) => current + 1);
         } catch (error) {
+          if (error instanceof AuthRequiredError) {
+            redirectToLogin();
+            return;
+          }
           const text =
             error instanceof Error
               ? error.message
@@ -287,6 +497,34 @@ export default function HomePage() {
     });
   }
 
+  async function handleLogout() {
+    await withLog("handleLogout", {}, async () => {
+      setLoggingOut(true);
+      try {
+        await logoutUser();
+        router.replace("/login");
+      } catch (error) {
+        setLoggingOut(false);
+        setMessage(
+          error instanceof Error
+            ? error.message
+            : "ログアウトに失敗しました。",
+        );
+        throw error;
+      }
+    }).catch(() => {
+      setLoggingOut(false);
+    });
+  }
+
+  if (authChecking) {
+    return (
+      <div className="flex h-dvh items-center justify-center bg-background text-sm text-muted-foreground">
+        ログイン確認中...
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-dvh flex-col bg-background text-foreground">
       <header className="flex h-14 shrink-0 items-center justify-between border-b px-4 md:px-6">
@@ -300,6 +538,23 @@ export default function HomePage() {
               話題ごとに、未読の記事だけを追う
             </p>
           </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {user ? (
+            <span className="hidden max-w-[12rem] truncate text-xs text-muted-foreground sm:inline">
+              {user.email}
+            </span>
+          ) : null}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={loggingOut}
+            onClick={() => void handleLogout()}
+          >
+            <LogOut />
+            {loggingOut ? "処理中..." : "ログアウト"}
+          </Button>
         </div>
       </header>
 
@@ -348,6 +603,7 @@ export default function HomePage() {
                       setArticles([]);
                       setArticlesLoading(true);
                       setSelectedTopicId(topic.id);
+                      setEditingTopic(false);
                     }}
                     className={cn(
                       "rounded-lg px-3 py-2 text-left text-sm transition-colors",
@@ -381,7 +637,7 @@ export default function HomePage() {
               />
               <Button
                 type="submit"
-                disabled={savingTopic || !isSupabaseConfigured}
+                disabled={savingTopic}
               >
                 <Plus />
                 追加
@@ -393,7 +649,7 @@ export default function HomePage() {
         <section className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div className="flex flex-col gap-3 border-b px-4 py-3 md:px-6">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
+              <div className="min-w-0 flex-1">
                 <h2 className="text-base font-medium">
                   {selectedTopic ? selectedTopic.name : "記事"}
                 </h2>
@@ -404,6 +660,34 @@ export default function HomePage() {
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                {selectedTopic ? (
+                  <>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={updatingTopic || deletingTopic}
+                      onClick={() => {
+                        setEditTopicName(selectedTopic.name);
+                        setEditingTopic((current) => !current);
+                        setMessage(null);
+                      }}
+                    >
+                      <Pencil />
+                      {editingTopic ? "編集をやめる" : "名前を編集"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      size="sm"
+                      disabled={updatingTopic || deletingTopic}
+                      onClick={() => void handleDeleteTopic()}
+                    >
+                      <Trash2 />
+                      {deletingTopic ? "削除中..." : "削除"}
+                    </Button>
+                  </>
+                ) : null}
                 <Button
                   type="button"
                   variant={showRead ? "secondary" : "outline"}
@@ -424,10 +708,36 @@ export default function HomePage() {
                 ) : null}
               </div>
             </div>
+            {selectedTopic && editingTopic ? (
+              <form
+                onSubmit={handleUpdateTopic}
+                className="flex flex-wrap items-end gap-2"
+              >
+                <div className="min-w-[12rem] flex-1">
+                  <label
+                    htmlFor="edit-topic-name"
+                    className="text-xs font-medium text-muted-foreground"
+                  >
+                    トピック名
+                  </label>
+                  <Input
+                    id="edit-topic-name"
+                    value={editTopicName}
+                    onChange={(event) => setEditTopicName(event.target.value)}
+                    disabled={updatingTopic}
+                    className="mt-1.5"
+                    autoComplete="off"
+                  />
+                </div>
+                <Button type="submit" disabled={updatingTopic}>
+                  {updatingTopic ? "保存中..." : "保存"}
+                </Button>
+              </form>
+            ) : null}
             {selectedTopic ? (
               <p className="text-xs text-muted-foreground">
                 「今すぐ取得」で Google News（日本）から「{selectedTopic.name}
-                」の最新記事 1 件を取り込みます。
+                」の最新記事 1 件を取り込みます。記事があるトピックは削除できません。
               </p>
             ) : null}
           </div>
@@ -461,8 +771,12 @@ export default function HomePage() {
                     <ArticleCard
                       key={article.id}
                       article={article}
-                      pending={readingId === article.id}
+                      pendingRead={readingId === article.id}
+                      pendingFavorite={favoritingId === article.id}
+                      pendingDelete={deletingArticleId === article.id}
                       onMarkAsRead={() => handleMarkAsRead(article.id)}
+                      onToggleFavorite={() => handleToggleFavorite(article)}
+                      onDelete={() => handleDeleteArticle(article)}
                     />
                   ))
                 : null}
@@ -484,12 +798,20 @@ function EmptyState({ text }: { text: string }) {
 
 function ArticleCard({
   article,
-  pending,
+  pendingRead,
+  pendingFavorite,
+  pendingDelete,
   onMarkAsRead,
+  onToggleFavorite,
+  onDelete,
 }: {
   article: Article;
-  pending: boolean;
+  pendingRead: boolean;
+  pendingFavorite: boolean;
+  pendingDelete: boolean;
   onMarkAsRead: () => void;
+  onToggleFavorite: () => void;
+  onDelete: () => void;
 }) {
   const level = toImportanceLevel(article.importance);
 
@@ -505,6 +827,9 @@ function ArticleCard({
           </span>
           {article.is_read ? (
             <span className="text-xs text-muted-foreground">既読</span>
+          ) : null}
+          {article.is_favorite ? (
+            <span className="text-xs text-amber-700">お気に入り</span>
           ) : null}
         </div>
         <CardTitle className="mt-2 text-lg leading-7">
@@ -527,15 +852,40 @@ function ArticleCard({
           {article.summary?.trim() ? article.summary : "要約はまだありません。"}
         </p>
       </CardContent>
-      <CardFooter className="justify-end bg-transparent">
+      <CardFooter className="justify-end gap-2 bg-transparent">
+        <Button
+          type="button"
+          variant="destructive"
+          disabled={pendingDelete}
+          onClick={onDelete}
+        >
+          <Trash2 />
+          {pendingDelete ? "削除中..." : "削除"}
+        </Button>
+        <Button
+          type="button"
+          variant={article.is_favorite ? "secondary" : "outline"}
+          disabled={pendingFavorite || pendingDelete}
+          onClick={onToggleFavorite}
+          aria-pressed={article.is_favorite}
+        >
+          <Star
+            className={cn(article.is_favorite && "fill-current text-amber-500")}
+          />
+          {pendingFavorite
+            ? "更新中..."
+            : article.is_favorite
+              ? "お気に入り解除"
+              : "お気に入り"}
+        </Button>
         <Button
           type="button"
           variant="outline"
-          disabled={article.is_read || pending}
+          disabled={article.is_read || pendingRead || pendingDelete}
           onClick={onMarkAsRead}
         >
           <Check />
-          {article.is_read ? "既読" : pending ? "更新中..." : "既読にする"}
+          {article.is_read ? "既読" : pendingRead ? "更新中..." : "既読にする"}
         </Button>
       </CardFooter>
     </Card>

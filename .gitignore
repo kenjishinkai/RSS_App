@@ -27,6 +27,12 @@ out/
 tsconfig.tsbuildinfo
 next-env.d.ts
 
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
 # Python (backend)
 .venv/
 venv/
@@ -46,6 +52,15 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 coverage/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+terraform.tfvars
+*.auto.tfvars
 
 # misc
 *.tsbuildinfo

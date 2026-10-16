@@ -7,25 +7,26 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
+from app.auth import get_current_user
 from app.logging_utils import log_call
+from app.services.article_store import ArticleStoreError
 from app.services.curate import run_curation
 from app.services.rss import FeedFetchError
-from app.services.supabase_writer import SupabaseWriterError
+from db.models import User
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
 class CurateRequest(BaseModel):
-    topic_id: str = Field(..., description="Supabase topics.id")
+    topic_id: str = Field(..., description="topics.id")
     topic_name: str = Field(..., description="検索に使うトピック名")
 
     @field_validator("topic_id", "topic_name", mode="before")
     @classmethod
     def coerce_and_require_text(cls, value: Any) -> str:
-        # JSON で数字で来ても文字列に揃える（例: topic_id: 1 → "1"）
         if value is None:
             raise ValueError("空にはできません")
         trimmed = str(value).strip()
@@ -43,13 +44,16 @@ class CurateResponse(BaseModel):
 
 @router.post("/curate", response_model=CurateResponse)
 @log_call
-def curate_now(body: CurateRequest) -> CurateResponse:
-    """Google News → 最新1件 → AI → Supabase を手動実行する。"""
+def curate_now(
+    body: CurateRequest,
+    _user: User = Depends(get_current_user),
+) -> CurateResponse:
+    """Google News → 最新1件 → AI → PostgreSQL を手動実行する。"""
     try:
         result = run_curation(topic_id=body.topic_id, topic_name=body.topic_name)
     except FeedFetchError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    except SupabaseWriterError as exc:
+    except ArticleStoreError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return CurateResponse(

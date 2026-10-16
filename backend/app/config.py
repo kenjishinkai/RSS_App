@@ -15,11 +15,12 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    supabase_url: str = ""
-    supabase_service_role_key: str = ""
+    database_url: str = ""
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash"
     cors_origins: str = "http://localhost:3000"
+    jwt_secret: str = ""
+    jwt_expire_minutes: int = 60 * 24 * 7
 
     @property
     def cors_origin_list(self) -> list[str]:
@@ -30,8 +31,8 @@ class Settings(BaseSettings):
         ]
 
     @property
-    def is_supabase_configured(self) -> bool:
-        return bool(self.supabase_url and self.supabase_service_role_key)
+    def is_database_configured(self) -> bool:
+        return bool(self.database_url.strip())
 
     @property
     def is_gemini_configured(self) -> bool:

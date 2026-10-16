@@ -4,9 +4,9 @@
 1. トピック名で Google News（日本向け）RSS URL を組み立てる
 2. rss.fetch_feed_items(...)
 3. 公開日時が最も新しい 1 件だけ残す
-4. supabase_writer.list_existing_urls(topic_id) で重複除外
+4. article_store.list_existing_urls(topic_id) で重複除外
 5. ai.enrich_article(...)
-6. supabase_writer.insert_articles(...)
+6. article_store.insert_articles(...)
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from urllib.parse import quote_plus
 
 from app.logging_utils import log_call
-from app.services import ai, rss, supabase_writer
+from app.services import ai, article_store, rss
 from app.services.rss import FeedFetchError, FeedItem
 
 _GOOGLE_NEWS_RSS = (
@@ -73,17 +73,17 @@ def run_curation(topic_id: str, topic_name: str) -> CurateResult:
     items = rss.fetch_feed_items(feed_url)
     candidates = pick_latest_item(items)
 
-    existing = supabase_writer.list_existing_urls(topic_id)
+    existing = article_store.list_existing_urls(topic_id)
     fresh = [item for item in candidates if item.url not in existing]
 
-    drafts: list[supabase_writer.ArticleDraft] = []
+    drafts: list[article_store.ArticleDraft] = []
     ai_count = 0
     for item in fresh:
         enrichment = ai.enrich_article(item.title, item.raw_summary)
         if enrichment.used_ai:
             ai_count += 1
         drafts.append(
-            supabase_writer.ArticleDraft(
+            article_store.ArticleDraft(
                 topic_id=topic_id,
                 title=item.title,
                 url=item.url,
@@ -93,7 +93,7 @@ def run_curation(topic_id: str, topic_name: str) -> CurateResult:
             )
         )
 
-    inserted = supabase_writer.insert_articles(drafts)
+    inserted = article_store.insert_articles(drafts)
     if fresh and ai_count == 0:
         ai_note = (
             "AI は未使用（GEMINI_API_KEY 未設定、または呼び出し失敗でフォールバック）。"

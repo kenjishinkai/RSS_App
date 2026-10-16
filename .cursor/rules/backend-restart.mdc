@@ -1,0 +1,49 @@
+---
+description: Safe restart procedure for the FastAPI backend (avoid orphan uvicorn processes on Windows)
+alwaysApply: true
+---
+
+# Backend 再起動手順（必須）
+
+Windows 上の `uvicorn --reload` は、雑に殺すと子プロセスがポート 8000 に残り、古い `.env` のまま応答することがある。backend を再起動するときは必ず次の順で行う。
+
+## 手順
+
+1. **既存プロセスをまとめて止める**（親・子・orphaned spawn すべて）
+
+```powershell
+Get-CimInstance Win32_Process |
+  Where-Object { $_.CommandLine -and ($_.CommandLine -match 'uvicorn|app\.main|multiprocessing.spawn') } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+```
+
+2. **ポート 8000 が空くまで確認する**
+
+```powershell
+Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
+```
+
+リスナーが残っていれば、その `OwningProcess` と `multiprocessing.spawn` 系を再停止する。空になるまで起動しない。
+
+3. **backend ディレクトリから 1 プロセスだけ起動する**
+
+```powershell
+cd backend
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+重ね起動しない。
+
+4. **反映確認**
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/health
+```
+
+`.env` の `GEMINI_MODEL` など、期待値が返ることを確認する。
+
+## 禁止
+
+- ポート使用中のまま追加で `uvicorn` を立てること
+- 親 PID だけを殺して子を放置すること
+- ポート確認なしに「再起動完了」とすること

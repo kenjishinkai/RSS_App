@@ -1,7 +1,6 @@
 # ニュースデスク 仕様書（現行ソース準拠）
 
-この文書は、**いまリポジトリに実装されている動き**だけをまとめた製品仕様です。  
-設計の詳細は [`docs/`](docs/) を参照してください。
+この文書は、**いまリポジトリに実装されている動き**をまとめた製品仕様のマスターです。
 
 ---
 
@@ -11,12 +10,13 @@
 
 | 役割 | 担当 | 補足 |
 |------|------|------|
-| 画面・トピック追加・既読 | `frontend/`（Next.js） | ブラウザで見える部分 |
-| RSS 取得・AI 要約・記事の書き込み | `backend/`（FastAPI） | 裏方の処理 |
-| データの保管 | Supabase（PostgreSQL） | 表（テーブル）に保存する倉庫 |
+| 画面・トピック追加・既読 | `frontend/`（Next.js） | ブラウザで見える部分。DB には直接つながない |
+| RSS 取得・AI 要約・DB 読み書き | `backend/`（FastAPI） | 裏方。ローカル PostgreSQL に接続 |
+| データの保管 | PostgreSQL（DB 名 `newsdesk`） | 表（テーブル）に保存する倉庫 |
 
 ```text
-Google News RSS → backend（rss → 最新1件 → ai → supabase_writer）→ Supabase ← frontend ← ブラウザ
+Google News RSS → backend（rss → 最新1件 → 重複除外 → ai → article_store）→ PostgreSQL newsdesk
+frontend → backend REST API → PostgreSQL newsdesk
 ```
 
 ---
@@ -25,18 +25,23 @@ Google News RSS → backend（rss → 最新1件 → ai → supabase_writer）�
 
 ### できること（実装済み）
 
-- トピックの一覧表示・追加
+- ユーザー登録・ログイン・ログアウト（JWT を httpOnly Cookie に保存）
+- 未ログイン時はログイン画面へ誘導（トピック／記事／取得 API はログイン必須）
+- トピックの一覧表示・追加・名前編集・削除（記事が残っているトピックは削除不可）
 - トピックごとの記事一覧（公開日時の新しい順）
 - 未読のみ表示 / 既読も含めて表示の切替
 - 記事を既読にする
+- 記事をお気に入り登録／解除（全員共有のフラグ）
+- 記事を削除する（全員共有。誰かが消すと全員の一覧から消える）
 - 「今すぐ取得」で Google News（日本向け）から、選択中トピック名の**最新記事 1 件**を取得（重複除外 → AI 要約 → DB 書き込み）
 - AI キー未設定・失敗時のフォールバック（短い要約と `importance=low`）
 
+**データの共有:** ログインは「門番」だけです。トピックや記事に「誰のものか」は付けていません。ログインした人は**全員が同じトピック・記事・お気に入り**を見ます（共有ホワイトボードのようなイメージ）。
+
 ### できないこと（未実装）
 
-- ログイン / 認証
+- ユーザーごとのデータ分離（個人用のトピック／記事／お気に入り）
 - 定期自動取得（cron など）
-- トピックの編集・削除 UI
 - 任意の RSS URL を指定して取得すること（取得元は Google News 固定）
 - 記事全文のクロール（RSS に載っている情報を使う）
 
@@ -46,27 +51,42 @@ Google News RSS → backend（rss → 最新1件 → ai → supabase_writer）�
 
 ```text
 RSS_App/
-  frontend/   … 画面（Next.js）。Supabase を読んで表示する
-  backend/    … 収集・要約（FastAPI）。RSS を取り、記事を Supabase に書く
-  docs/       … 基本・詳細・プログラム設計書
-  spec.md     … 本仕様書（現状の製品仕様）
+  frontend/   … 画面（Next.js）。backend API 経由で表示・操作
+  backend/    … 収集・要約・DB API（FastAPI → PostgreSQL newsdesk）
+  db/         … DB スキーマ定義（SQLAlchemy）と Alembic
+  terraform/  … ローカル PostgreSQL の DB / ユーザー作成
+  spec.md     … 本仕様書（マスター）
 ```
 
 | パス | 役割 |
 |------|------|
-| `frontend/app/page.tsx` | 画面本体（1 ページ） |
-| `frontend/lib/supabase/` | Supabase クライアントと型 |
-| `frontend/lib/backend.ts` | `POST /jobs/curate` の呼び出し |
+| `db/models.py` | DB スキーマ定義の正（users / topics / articles） |
+| `db/alembic/` | テーブル作成・変更のマイグレーション |
+| `terraform/` | ローカル PostgreSQL の DB・ロール作成 |
+| `frontend/app/page.tsx` | 画面本体（ログイン後） |
+| `frontend/app/login/page.tsx` | ログイン画面 |
+| `frontend/app/register/page.tsx` | 新規登録画面 |
+| `frontend/lib/types.ts` | Topic / Article 型と重要度ヘルパ（`toImportanceLevel` 等） |
+| `frontend/lib/auth.ts` | 登録／ログイン／ログアウト／`/auth/me` |
+| `frontend/lib/backend.ts` | backend REST（topics / articles / curate）。Cookie 付き |
 | `frontend/lib/logging.ts` | フロントの開始／終了／例外ログ（`withLog`） |
 | `frontend/app/api/logs/route.ts` | フロントログを `Logs/frontend_*.log` に書く受け口 |
 | `backend/app/main.py` | FastAPI 入口・`GET /health` |
-| `backend/app/routers/jobs.py` | `POST /jobs/curate` |
+| `backend/app/config.py` | 環境変数（`DATABASE_URL`・`JWT_SECRET` 等） |
+| `backend/app/auth.py` | JWT Cookie・パスワードハッシュ・`get_current_user` |
+| `backend/app/db.py` | SQLAlchemy セッション |
+| `backend/app/schemas.py` | API レスポンス用スキーマ |
+| `backend/app/routers/auth.py` | `POST /auth/register`・`/login`・`/logout`・`GET /auth/me` |
+| `backend/app/routers/topics.py` | `GET/POST/PATCH/DELETE /topics`（ログイン必須） |
+| `backend/app/routers/articles.py` | `GET /articles`・既読・お気に入り・削除（ログイン必須） |
+| `backend/app/routers/jobs.py` | `POST /jobs/curate`（ログイン必須） |
 | `backend/app/services/curate.py` | パイプラインの司令塔 |
 | `backend/app/services/rss.py` | RSS 取得 |
 | `backend/app/services/ai.py` | 要約・重要度 |
-| `backend/app/services/supabase_writer.py` | articles への書き込み |
+| `backend/app/services/article_store.py` | articles の照会・INSERT |
 
-フロント側に Next.js の API Route はありません。画面のデータ操作は Supabase 直アクセスです。
+画面のデータ操作（トピック・記事）は backend API 経由です。  
+ログ書き込みだけ、Next.js の API Route（`POST /api/logs`）を使います。
 
 ---
 
@@ -84,11 +104,11 @@ RSS_App/
 
 | 操作 | 動き |
 |------|------|
-| 一覧 | Supabase `topics` を `created_at` 昇順で取得 |
+| 一覧 | `GET /topics`（`created_at` 昇順） |
 | 選択 | そのトピックの記事を読み込む |
-| 追加 | 名前を入力して `topics` に INSERT。追加後にそのトピックを選択 |
-
-トピックの編集・削除 UI はありません。
+| 追加 | 名前を入力して `POST /topics`。追加後にそのトピックを選択 |
+| 編集 | 選択中トピックの名前を `PATCH /topics/{id}` で更新 |
+| 削除 | `DELETE /topics/{id}`。**記事が1件でもあると 409 で拒否**（空の箱だけ捨てられる） |
 
 ### 4.3 「今すぐ取得」
 
@@ -106,51 +126,53 @@ RSS_App/
 
 | 項目 | 内容 |
 |------|------|
-| 取得 | 選択中 `topic_id` の `articles` を `published_at` 降順 |
-| 既定表示 | 未読のみ（`is_read = false`） |
-| 切替 | 「既読も表示」で全件 |
-| 表示内容 | タイトル、要約、重要度（高/中/低）、公開日時、元記事リンク |
-| 既読 | `articles.is_read = true` に UPDATE |
+| 取得 | `GET /articles?topic_id=`（`published_at` 降順） |
+| 既定表示 | 未読のみ（画面側で `is_read = false` を絞り込み） |
+| 切替 | 「既読を表示」で全件、「既読を隠す」で未読のみに戻す |
+| 表示内容 | タイトル、要約、重要度（高/中/低）、公開日時、元記事リンク、お気に入り状態 |
+| 既読 | `PATCH /articles/{id}/read` |
+| お気に入り | `PATCH /articles/{id}/favorite` で登録、`DELETE /articles/{id}/favorite` で解除（全員共有） |
+| 削除 | `DELETE /articles/{id}`（確認ダイアログあり。全員の一覧から消える） |
 
-重要度の表示は `high` / `medium` / `low`（および日本語の高・中）を受け付けます。
+未読／既読の切替は DB クエリではなく、取得済み一覧を画面側でフィルタします。  
+重要度の表示は `high` / `medium` / `low`（および日本語の高・中、英語の `mid`→medium）を受け付けます。  
+お気に入りは `articles.is_favorite`（共有）。誰かが付けると全員の画面に星が付きます。
 
 ---
 
 ## 5. データ仕様
 
-実体は Supabase（PostgreSQL）です。型の正は [`frontend/lib/supabase/types.ts`](frontend/lib/supabase/types.ts) です。
+**実行時**は backend がローカル PostgreSQL（データベース `newsdesk`）へ SQLAlchemy で接続します。  
+フロントは DB パスワードを持たず、REST API のみを呼びます。  
+**DB 箱づくり**は Terraform、**テーブル作成**は Alembic です。
 
-### 5.1 `topics`
+| 役割 | 正となる定義 / 手順 |
+|------|---------------------|
+| DB スキーマ（テーブル・列・制約） | [`db/models.py`](db/models.py)（SQLAlchemy） |
+| クライアント型（TypeScript） | [`frontend/lib/types.ts`](frontend/lib/types.ts)（Topic / Article と重要度ヘルパ） |
+| ローカル DB・ユーザー作成 | [`terraform/`](terraform/)（`terraform apply`） |
+| テーブル適用 | `alembic -c db/alembic.ini upgrade head`（要 `DATABASE_URL`） |
 
-| 列 | 型（想定） | 説明 |
-|----|------------|------|
-| `id` | UUID（string） | 主キー |
-| `name` | string | トピック名 |
-| `created_at` | timestamptz（string） | 作成日時 |
+テーブルは `public.users` / `public.topics` / `public.articles`。`feed_url` 列は無い（取得元 URL は backend が Google News から組み立てる）。
 
-`feed_url` 列はありません。取得元 URL は backend が Google News から組み立てます。
+| テーブル | 役割 |
+|----------|------|
+| `users` | ログイン用（email / password_hash）。topics・articles とは紐づけない |
+| `topics` | 話題の箱（全員共有） |
+| `articles` | 記事（全員共有）。`is_read` / `is_favorite` 含む |
 
-### 5.2 `articles`
+自動テストは別 DB `newsdesk_test`（同じスキーマ）を使う。
 
-| 列 | 型（想定） | 説明 |
-|----|------------|------|
-| `id` | UUID（string） | 主キー |
-| `topic_id` | string | 所属トピック |
-| `title` | string | タイトル |
-| `url` | string | 元記事 URL（トピック内の重複判定に使う） |
-| `summary` | string \| null | 要約 |
-| `importance` | string \| null | `high` / `medium` / `low` など |
-| `is_read` | boolean | 既読フラグ |
-| `published_at` | string \| null | 公開日時 |
+### 5.1 誰が読む・書くか
 
-### 5.3 誰が読む・書くか
+| 操作 | 担当 |
+|------|------|
+| 登録・ログイン・ログアウト | frontend → `/auth/*` → PostgreSQL（users） |
+| topics の読・追加・編集・削除、articles の読・既読・お気に入り・削除 | frontend → backend REST（要ログイン）→ PostgreSQL |
+| articles の新規 INSERT、既存 URL 照会 | backend（キュレーション、要ログイン）→ PostgreSQL |
 
-| 操作 | 担当 | 鍵の種類 |
-|------|------|----------|
-| topics 読・書、articles 読・既読更新 | frontend | anon（公開してよい入場券） |
-| articles の新規 INSERT、既存 URL 照会 | backend | service_role（秘密のマスターキー。ブラウザに出さない） |
-
-開発時は Supabase の RLS（行単位のアクセス制限）で、上記操作が通るように設定する必要があります。
+接続文字列は `backend/.env` の `DATABASE_URL` のみ（ブラウザには出さない）。  
+セッションは JWT を Cookie（名前 `newsdesk_token`、httpOnly）に載せます。
 
 ---
 
@@ -165,13 +187,55 @@ RSS_App/
 ```json
 {
   "status": "ok",
-  "supabase_configured": true,
+  "database_configured": true,
   "gemini_configured": true,
   "gemini_model": "gemini-2.0-flash"
 }
 ```
 
-### 6.2 `POST /jobs/curate`
+### 6.2 認証 API
+
+| メソッド | パス | 用途 |
+|----------|------|------|
+| POST | `/auth/register` | 新規登録（成功時 Cookie をセット） |
+| POST | `/auth/login` | ログイン（成功時 Cookie をセット） |
+| POST | `/auth/logout` | ログアウト（Cookie 削除） |
+| GET | `/auth/me` | いまログイン中のユーザー |
+
+主なエラー:
+
+| 状況 | HTTP |
+|------|------|
+| メール形式不正・パスワード短すぎ | 422 |
+| ログイン失敗 | 401 |
+| メール重複 | 409 |
+| 未ログインで `/auth/me` | 401 |
+
+### 6.3 データ API（いずれもログイン必須。Cookie が無いと 401）
+
+| メソッド | パス | 用途 |
+|----------|------|------|
+| GET | `/topics` | トピック一覧（共有データ） |
+| POST | `/topics` | トピック追加（`{ "name": "..." }`） |
+| PATCH | `/topics/{id}` | トピック名を更新（`{ "name": "..." }`） |
+| DELETE | `/topics/{id}` | トピック削除（記事があると 409） |
+| GET | `/articles?topic_id=` | トピック別記事一覧（`published_at` 降順、null は末尾） |
+| PATCH | `/articles/{id}/read` | 既読にする（成功時は更新後の記事を返す） |
+| PATCH | `/articles/{id}/favorite` | お気に入りにする |
+| DELETE | `/articles/{id}/favorite` | お気に入りを解除 |
+| DELETE | `/articles/{id}` | 記事を削除 |
+
+主なエラー:
+
+| 状況 | HTTP |
+|------|------|
+| 未ログイン | 401 |
+| トピック名が空、`topic_id` が不正な UUID | 422 |
+| トピック／記事が無い | 404 |
+| 記事があるトピックを削除しようとした | 409 |
+| DB 未設定や書き込み失敗 | 502（または未設定時は依存解決で失敗） |
+
+### 6.4 `POST /jobs/curate`（ログイン必須）
 
 選択トピック名で Google News（日本）を検索し、最新 1 件を取り込んで手動実行します。
 
@@ -186,7 +250,7 @@ RSS_App/
 
 `topic_id` / `topic_name` が空文字のときは検証エラー（通常 422）です。
 
-内部で使う RSS URL の形（参考）:
+内部で使う RSS URL の形（参考）。`topic_name` は URL エンコードして埋めます:
 
 ```text
 https://news.google.com/rss/search?q={topic_name}&hl=ja&gl=JP&ceid=JP:ja
@@ -210,9 +274,14 @@ https://news.google.com/rss/search?q={topic_name}&hl=ja&gl=JP&ceid=JP:ja
 | `inserted` | 実際に書き込んだ件数（0 または 1） |
 | `message` | 人向けの結果説明 |
 
+**成功だが書き込み 0 件になる例**
+
+- 同じ最新記事の URL が既に DB にある → `inserted=0`（HTTP 200）
+- `DATABASE_URL` が空 → 例外にせず `inserted=0`（HTTP 200）
+
 **失敗**
 
-- RSS 取得失敗、Supabase 書き込み失敗 → HTTP **502**（`detail` に理由）
+- RSS 取得失敗、または DB 設定済みでの書き込み例外 → HTTP **502**（`detail` に理由）
 - リクエスト形式不正 → FastAPI の検証エラー（通常 422）
 
 CORS は `CORS_ORIGINS`（既定 `http://localhost:3000`）で許可します。
@@ -227,10 +296,10 @@ CORS は `CORS_ORIGINS`（既定 `http://localhost:3000`）で許可します。
 1. topic_name から Google News（日本）RSS URL を組み立てる
 2. rss.fetch_feed_items(...)               … RSS を取得・パース
 3. 公開日時が最も新しい 1 件だけ残す
-4. supabase_writer.list_existing_urls(...) … 同一トピックの既存 URL を取得
+4. article_store.list_existing_urls(...)   … 同一トピックの既存 URL を取得
 5. 既存 URL ならスキップ、新規なら続行
 6. ai.enrich_article(...)                  … 要約・重要度を付与
-7. supabase_writer.insert_articles(...)    … articles に INSERT
+7. article_store.insert_articles(...)      … articles に INSERT
 ```
 
 AI（`GEMINI_API_KEY`）が無い、または呼び出しに失敗した場合でも、取得と書き込みは続行します（フォールバック要約、`importance=low`）。  
@@ -244,14 +313,14 @@ AI（`GEMINI_API_KEY`）が無い、または呼び出しに失敗した場合�
 
 | 置き場 | 変数 | 意味 |
 |--------|------|------|
-| `frontend/.env.local` | `NEXT_PUBLIC_SUPABASE_URL` | Supabase プロジェクトの URL |
-| `frontend/.env.local` | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | 公開してよい入場券（anon） |
 | `frontend/.env.local` | `NEXT_PUBLIC_BACKEND_URL` | バックエンド URL（省略時 `http://localhost:8000`） |
-| `backend/.env` | `SUPABASE_URL` | 同じ Supabase URL |
-| `backend/.env` | `SUPABASE_SERVICE_ROLE_KEY` | 秘密のマスターキー（ブラウザに出さない） |
+| `backend/.env` | `DATABASE_URL` | ローカル PostgreSQL（例: `postgresql+psycopg://newsdesk:***@127.0.0.1:5432/newsdesk`） |
 | `backend/.env` | `GEMINI_API_KEY` | Gemini API キー（未設定でも取得・書き込みは動く） |
 | `backend/.env` | `GEMINI_MODEL` | 省略可（既定 `gemini-2.0-flash`） |
-| `backend/.env` | `CORS_ORIGINS` | 許可するフロント起源（既定 `http://localhost:3000`） |
+| `backend/.env` | `CORS_ORIGINS` | 許可するフロント起源（既定 `http://localhost:3000`）。Cookie 利用のため credentials 対応が必要 |
+| `backend/.env` | `JWT_SECRET` | ログイン用 JWT の署名鍵（長いランダム文字列） |
+| `backend/.env` | `JWT_EXPIRE_MINUTES` | 省略可（既定 `10080` = 7 日） |
+| （pytest / E2E） | `TEST_DATABASE_URL` | テスト専用 DB（未設定時は `.../newsdesk_test`） |
 
 テンプレート: [`frontend/.env.example`](frontend/.env.example)、[`backend/.env.example`](backend/.env.example)
 
@@ -280,6 +349,28 @@ uvicorn app.main:app --reload --port 8000
 
 → http://localhost:8000/health  
 → http://localhost:8000/docs
+
+### 8.3 自動テスト
+
+テスト用 DB は Terraform の `newsdesk_test`（アプリ用 `newsdesk` とは別）。たとえ: 本番の倉庫と練習用倉庫を分ける。
+
+| 層 | ツール | 実行 |
+|----|--------|------|
+| API | pytest（`backend/tests/`） | `cd backend` → `pip install -r requirements-dev.txt` → `pytest` |
+| フロント関数 | Vitest（`frontend/lib/*.test.ts`） | `cd frontend` → `npm test` |
+| ブラウザ E2E | Playwright（`frontend/e2e/`） | テスト DB で uvicorn 起動後 → `cd frontend` → `npm run test:e2e` |
+
+E2E の backend 起動例:
+
+```powershell
+cd backend
+$env:DATABASE_URL = "postgresql+psycopg://newsdesk:***@127.0.0.1:5432/newsdesk_test"
+$env:JWT_SECRET = "test-jwt-secret-for-e2e-only"
+$env:CORS_ORIGINS = "http://127.0.0.1:3000,http://localhost:3000"
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+詳細手順は [README.md](README.md) の「自動テスト」を参照。
 
 ---
 
@@ -313,11 +404,14 @@ backend / frontend とも、対象メソッドで **開始／終了／例外** �
 | 場所 | 関数 |
 |------|------|
 | `main.py` | `health` |
+| `routers/auth.py` | `register`, `login`, `logout`, `me` |
+| `routers/topics.py` | `list_topics`, `create_topic`, `update_topic`, `delete_topic` |
+| `routers/articles.py` | `list_articles`, `mark_article_read`, `mark_article_favorite`, `unmark_article_favorite`, `delete_article` |
 | `routers/jobs.py` | `curate_now` |
 | `services/curate.py` | `run_curation`, `build_google_news_feed_url`, `pick_latest_item` |
 | `services/rss.py` | `fetch_feed_items` |
 | `services/ai.py` | `enrich_article`, `_enrich_with_gemini` |
-| `services/supabase_writer.py` | `get_client`, `list_existing_urls`, `insert_articles` |
+| `services/article_store.py` | `list_existing_urls`, `insert_articles` |
 
 小さな内部ヘルパー（例: `_clean_text`）は対象外。
 
@@ -336,8 +430,11 @@ backend / frontend とも、対象メソッドで **開始／終了／例外** �
 
 | 場所 | 関数 |
 |------|------|
-| `lib/backend.ts` | `runCurateJob` |
-| `app/page.tsx` | `loadTopics`, `loadArticles`, `handleAddTopic`, `handleMarkAsRead`, `handleCurateNow` |
+| `lib/auth.ts` | `fetchMe`, `registerUser`, `loginUser`, `logoutUser` |
+| `lib/backend.ts` | `fetchTopics`, `createTopic`, `updateTopic`, `deleteTopic`, `fetchArticles`, `markArticleRead`, `markArticleFavorite`, `unmarkArticleFavorite`, `deleteArticle`, `runCurateJob` |
+| `app/page.tsx` | `checkAuthAndLoadTopics`, `loadArticles`, `handleAddTopic`, `handleUpdateTopic`, `handleDeleteTopic`, `handleMarkAsRead`, `handleToggleFavorite`, `handleDeleteArticle`, `handleCurateNow`, `handleLogout` |
+| `app/login/page.tsx` | `handleLogin` |
+| `app/register/page.tsx` | `handleRegister` |
 
 ---
 
@@ -345,10 +442,11 @@ backend / frontend とも、対象メソッドで **開始／終了／例外** �
 
 - 取得元は Google News（日本）固定。任意の RSS サイトは指定できない
 - 1 回の取得で取り込むのは最新 1 件のみ。同じ最新記事が既にあると書き込み 0 件
-- 画面にログインがないため、RLS と鍵の扱いを誤るとデータが広く見える可能性がある
+- ログインは門番のみ。ユーザーごとのトピック／記事／お気に入りの分離はしない（共有データ）
+- 記事が残っているトピックは削除できない（先に各記事を `DELETE /articles/{id}` で空にしてからトピックを削除する）
 - AI 未設定時は要約品質が下がる（タイトルや RSS 説明の切り出し相当）
 - 定期取得は手動の「今すぐ取得」か、外部スケジューラで API を叩く必要がある
-- リポジトリ内に SQL マイグレーションは無い。テーブルは Supabase 側で用意する
+- DB はローカル PostgreSQL（`newsdesk`）。箱は Terraform、テーブルは Alembic（`db/models.py` が正）
 
 ---
 
@@ -357,8 +455,4 @@ backend / frontend とも、対象メソッドで **開始／終了／例外** �
 | 文書 | 内容 |
 |------|------|
 | [README.md](README.md) | 起動方法・環境変数の案内 |
-| [docs/基本設計書.md](docs/基本設計書.md) | 全体像・役割分担 |
-| [docs/詳細設計書.md](docs/詳細設計書.md) | API・DB・画面状態の詳細 |
-| [docs/プログラム設計書.md](docs/プログラム設計書.md) | プログラム設計書の索引 |
-| [docs/プログラム設計書_バックエンド.md](docs/プログラム設計書_バックエンド.md) | バックエンド関数単位 |
-| [docs/プログラム設計書_フロントエンド.md](docs/プログラム設計書_フロントエンド.md) | フロントエンド関数単位 |
+| [spec.md](spec.md) | 製品仕様のマスター（本ファイル） |
